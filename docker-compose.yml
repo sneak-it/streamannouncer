@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  stream-announcer:
+    build: .
+    container_name: stream-announcer-bot
+    restart: unless-stopped
+    # Run as the unprivileged node user (uid 1000)
+    user: "1000:1000"
+    # Security baselines: drop all capabilities and prevent privilege escalation
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      - NODE_ENV=production
+    # Load configuration from the .env file
+    env_file:
+      - .env
+    volumes:
+      # Mount the local data directory to persist the SQLite database
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "ls", "/tmp/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

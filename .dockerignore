@@ -1,0 +1,9 @@
+node_modules
+npm-debug.log
+.git
+.env
+data/
+bot.db
+dist/
+plans/
+AGENTS.md

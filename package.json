@@ -1,0 +1,24 @@
+{
+  "name": "streamannouncer",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx --env-file-if-exists=.env server.ts",
+    "build": "tsc --noEmit",
+    "start": "tsx --env-file-if-exists=.env server.ts",
+    "lint": "eslint . && tsc --noEmit"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.9.0",
+    "discord.js": "^14.26.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^25.6.0",
+    "eslint": "^10.2.0",
+    "tsx": "^4.21.0",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.58.2"
+  }
+}
