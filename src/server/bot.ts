@@ -1,9 +1,13 @@
-import { Client, GatewayIntentBits, EmbedBuilder, REST, Routes, SlashCommandBuilder, PermissionsBitField, Events, MessageFlags } from 'discord.js';
-import type { TextChannel, GuildMember, ChatInputCommandInteraction } from 'discord.js';
-import fs from 'fs';
-import db from './db.js';
-import { getUsers, getStreamsByIds, getUsersByIds, TwitchApiError, clearTwitchToken } from './twitch.js';
 import type { TwitchUser } from './twitch.js';
+import type { ChatInputCommandInteraction, GuildMember, TextChannel } from 'discord.js';
+
+import fs from 'node:fs';
+
+import db from './db.js';
+import { clearTwitchToken, getStreamsByIds, getUsers, getUsersByIds, TwitchApiError } from './twitch.js';
+
+import { Client, EmbedBuilder, Events, GatewayIntentBits, MessageFlags, PermissionsBitField, REST, Routes, SlashCommandBuilder } from 'discord.js';
+
 
 interface TrackedUser {
   discord_id: string;
@@ -54,8 +58,8 @@ async function getUserProfile(userId: string): Promise<TwitchUser | undefined> {
       });
       return users[0];
     }
-  } catch (e) {
-    console.error(`Failed to get user profile for ${userId}:`, e);
+  } catch (error) {
+    console.error(`Failed to get user profile for ${userId}:`, error);
   }
 }
 
@@ -114,8 +118,8 @@ client.once(Events.ClientReady, async () => {
   // Create health file for Docker healthcheck
   try {
     fs.writeFileSync(HEALTH_FILE, 'ok');
-  } catch (err) {
-    console.error('Failed to create health file:', err);
+  } catch (error) {
+    console.error('Failed to create health file:', error);
   }
 
   // Register commands
@@ -159,8 +163,8 @@ async function checkAdminPermission(interaction: ChatInputCommandInteraction): P
          try {
            const fetchedMember = await interaction.guild.members.fetch(interaction.user.id);
            hasPermission = fetchedMember.roles.cache.has(adminRoleId);
-         } catch (e) {
-           console.error('Failed to fetch member:', e);
+         } catch (error) {
+           console.error('Failed to fetch member:', error);
          }
       }
     }
@@ -176,7 +180,8 @@ async function checkAdminPermission(interaction: ChatInputCommandInteraction): P
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
-  if (interaction.commandName === 'add-streamer') {
+  switch (interaction.commandName) {
+  case 'add-streamer': {
     if (!(await checkAdminPermission(interaction))) return;
 
     const targetUser = interaction.options.getUser('user');
@@ -219,7 +224,10 @@ client.on('interactionCreate', async interaction => {
       console.error('Error linking Twitch account:', error);
       await interaction.reply({ content: 'An error occurred while verifying the Twitch account.', flags: MessageFlags.Ephemeral });
     }
-  } else if (interaction.commandName === 'remove-streamer') {
+  
+  break;
+  }
+  case 'remove-streamer': {
     if (!(await checkAdminPermission(interaction))) return;
 
     const targetUser = interaction.options.getUser('user');
@@ -238,16 +246,15 @@ client.on('interactionCreate', async interaction => {
         result = db.prepare('DELETE FROM tracked_users WHERE twitch_username = ?').run(username);
       }
 
-      if (result && result.changes > 0) {
-        await interaction.reply({ content: `Successfully removed the streamer.`, flags: MessageFlags.Ephemeral });
-      } else {
-        await interaction.reply({ content: `Could not find a tracked streamer matching that criteria.`, flags: MessageFlags.Ephemeral });
-      }
+      await (result && result.changes > 0 ? interaction.reply({ content: `Successfully removed the streamer.`, flags: MessageFlags.Ephemeral }) : interaction.reply({ content: `Could not find a tracked streamer matching that criteria.`, flags: MessageFlags.Ephemeral }));
     } catch (error) {
       console.error('Error removing streamer:', error);
       await interaction.reply({ content: 'An error occurred while removing the streamer.', flags: MessageFlags.Ephemeral });
     }
-  } else if (interaction.commandName === 'list-streamers') {
+  
+  break;
+  }
+  case 'list-streamers': {
     if (!(await checkAdminPermission(interaction))) return;
 
     try {
@@ -258,23 +265,23 @@ client.on('interactionCreate', async interaction => {
         return;
       }
 
-      let list = '**Tracked Streamers:**\\n\\n';
+      let list = String.raw`**Tracked Streamers:**\n\n`;
       for (const user of users) {
         const addedDate = user.added_at ? new Date(user.added_at).toLocaleString() : 'Unknown';
         const addedBy = user.added_by ? `<@${user.added_by}>` : 'Unknown';
-        list += `• **Twitch:** [${user.twitch_username}](https://twitch.tv/${user.twitch_username}) | **Discord:** <@${user.discord_id}>\\n`;
-        list += `  └ Added by ${addedBy} on ${addedDate}\\n\\n`;
+        list += String.raw`• **Twitch:** [${user.twitch_username}](https://twitch.tv/${user.twitch_username}) | **Discord:** <@${user.discord_id}>\n`;
+        list += String.raw`  └ Added by ${addedBy} on ${addedDate}\n\n`;
       }
 
       // Split into multiple messages if too long (Discord limit is 2000 chars)
       const chunks = [];
       let currentChunk = '';
-      for (const line of list.split('\\n\\n')) {
+      for (const line of list.split(String.raw`\n\n`)) {
         if (currentChunk.length + line.length + 2 > 1900) {
           chunks.push(currentChunk);
-          currentChunk = line + '\\n\\n';
+          currentChunk = line + String.raw`\n\n`;
         } else {
-          currentChunk += line + '\\n\\n';
+          currentChunk += line + String.raw`\n\n`;
         }
       }
       if (currentChunk) chunks.push(currentChunk);
@@ -287,7 +294,10 @@ client.on('interactionCreate', async interaction => {
       console.error('Error listing streamers:', error);
       await interaction.reply({ content: 'An error occurred while listing streamers.', flags: MessageFlags.Ephemeral });
     }
-  } else if (interaction.commandName === 'test-embed') {
+  
+  break;
+  }
+  case 'test-embed': {
     if (!(await checkAdminPermission(interaction))) return;
 
     const username = interaction.options.getString('username')?.toLowerCase();
@@ -355,6 +365,10 @@ client.on('interactionCreate', async interaction => {
       console.error('Error sending test embed:', error);
       await interaction.editReply({ content: 'An error occurred while sending the test embed.' });
     }
+  
+  break;
+  }
+  // No default
   }
 });
 
@@ -379,8 +393,8 @@ export async function stopBot() {
     if (fs.existsSync(HEALTH_FILE)) {
       fs.unlinkSync(HEALTH_FILE);
     }
-  } catch (err) {
-    console.error('Failed to remove health file:', err);
+  } catch (error) {
+    console.error('Failed to remove health file:', error);
   }
 }
 
@@ -443,8 +457,8 @@ async function executePoll() {
             orphanedUsers.push(user.discord_id);
           }
         }
-      } catch (e) {
-        console.error('Error fetching members to check roles:', e);
+      } catch (error) {
+        console.error('Error fetching members to check roles:', error);
         return; // Skip this cycle if we can't verify roles
       }
     } else {
@@ -476,17 +490,17 @@ async function executePoll() {
       try {
         const streams = await getStreamsByIds(chunk);
         liveStreams.push(...streams);
-      } catch (e) {
-        if (e instanceof TwitchApiError) {
-          console.error('Twitch API error:', e.message);
-          if (e.statusCode === 401) {
+      } catch (error) {
+        if (error instanceof TwitchApiError) {
+          console.error('Twitch API error:', error.message);
+          if (error.statusCode === 401) {
             // Token expired, clear it and retry
             clearTwitchToken();
             continue;
           }
         }
-        console.error('Failed to get streams:', e);
-        chunk.forEach(id => failedTwitchIds.add(id));
+        console.error('Failed to get streams:', error);
+        for (const id of chunk) failedTwitchIds.add(id);
       }
     }
 
@@ -502,11 +516,11 @@ async function executePoll() {
             const message = await channel.messages.fetch(active.message_id);
             if (message) await message.delete();
           }
-        } catch (e) {
-          if (typeof e === 'object' && e !== null && 'code' in e && (e as { code?: number }).code === 10008) { // Discord error code for unknown message
+        } catch (error) {
+          if (typeof error === 'object' && error !== null && 'code' in error && (error as { code?: number }).code === 10_008) { // Discord error code for unknown message
             console.log(`Message ${active.message_id} already deleted, removing from DB`);
           } else {
-            console.error(`Failed to delete message for Twitch ID ${active.twitch_id}:`, e);
+            console.error(`Failed to delete message for Twitch ID ${active.twitch_id}:`, error);
           }
           db.prepare("DELETE FROM active_streams WHERE twitch_id = ?").run(active.twitch_id);
         }
@@ -567,8 +581,8 @@ async function executePoll() {
           if (message) {
             await message.edit({ embeds: [embed] });
           }
-        } catch (e) {
-          console.error(`Failed to update message for ${username}:`, e);
+        } catch (error) {
+          console.error(`Failed to update message for ${username}:`, error);
           // If message deleted, remove from active_streams so it posts again next time
           db.prepare("DELETE FROM active_streams WHERE twitch_id = ?").run(twitchId);
         }
@@ -580,8 +594,8 @@ async function executePoll() {
             INSERT INTO active_streams (twitch_id, discord_id, message_id, channel_id, start_time)
             VALUES (?, ?, ?, ?, ?)
           `).run(twitchId, trackedUser?.discord_id, message.id, channel.id, Date.now());
-        } catch (e) {
-          console.error(`Failed to send message for ${username}:`, e);
+        } catch (error) {
+          console.error(`Failed to send message for ${username}:`, error);
         }
       }
     }

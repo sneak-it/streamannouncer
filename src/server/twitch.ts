@@ -72,7 +72,7 @@ async function handleRateLimit(response: Response, operation: string): Promise<v
   
   const resetHeader = response.headers.get(RATE_LIMIT_RESET_HEADER);
   if (resetHeader) {
-    const resetTime = parseInt(resetHeader, 10);
+    const resetTime = Number.parseInt(resetHeader, 10);
     const waitTime = (resetTime * 1000) - Date.now() + 1000;
     if (waitTime > 0) {
       console.warn(`Twitch API rate limited for ${operation}. Waiting ${waitTime}ms...`);
@@ -105,12 +105,12 @@ async function handleRateLimit(response: Response, operation: string): Promise<v
 // Token management with race condition protection
 let accessToken = '';
 let tokenExpiresAt = 0;
-let tokenRefreshPromise: Promise<string> | null = null;
+let tokenRefreshPromise: Promise<string> | undefined;
 
 export function clearTwitchToken() {
   accessToken = '';
   tokenExpiresAt = 0;
-  tokenRefreshPromise = null;
+  tokenRefreshPromise = undefined;
 }
 
 export async function getTwitchToken() {
@@ -151,7 +151,7 @@ export async function getTwitchToken() {
       tokenExpiresAt = Date.now() + (data.expires_in - 300) * 1000;
       return accessToken;
     } finally {
-      tokenRefreshPromise = null;
+      tokenRefreshPromise = undefined;
     }
   })();
   
@@ -165,7 +165,7 @@ export async function getStreams(usernames: string[]) {
   const clientId = process.env.TWITCH_CLIENT_ID;
   
   const params = new URLSearchParams();
-  usernames.forEach(u => params.append('user_login', u));
+  for (const u of usernames) params.append('user_login', u);
   
   const response = await fetch(`https://api.twitch.tv/helix/streams?${params.toString()}`, {
     headers: {
@@ -194,7 +194,7 @@ export async function getUsers(usernames: string[]) {
   const clientId = process.env.TWITCH_CLIENT_ID;
   
   const params = new URLSearchParams();
-  usernames.forEach(u => params.append('login', u));
+  for (const u of usernames) params.append('login', u);
   
   const response = await fetch(`https://api.twitch.tv/helix/users?${params.toString()}`, {
     headers: {
@@ -223,7 +223,7 @@ export async function getStreamsByIds(userIds: string[]) {
   const clientId = process.env.TWITCH_CLIENT_ID;
   
   const params = new URLSearchParams();
-  userIds.forEach(id => params.append('user_id', id));
+  for (const id of userIds) params.append('user_id', id);
   
   const response = await fetch(`https://api.twitch.tv/helix/streams?${params.toString()}`, {
     headers: {
@@ -252,7 +252,7 @@ export async function getUsersByIds(userIds: string[]) {
   const clientId = process.env.TWITCH_CLIENT_ID;
   
   const params = new URLSearchParams();
-  userIds.forEach(id => params.append('id', id));
+  for (const id of userIds) params.append('id', id);
   
   const response = await fetch(`https://api.twitch.tv/helix/users?${params.toString()}`, {
     headers: {

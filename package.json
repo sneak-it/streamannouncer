@@ -2,6 +2,9 @@
   "name": "streamannouncer",
   "version": "0.1.0",
   "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "scripts": {
     "dev": "tsx --env-file-if-exists=.env server.ts",
     "build": "tsc --noEmit",
@@ -17,6 +20,11 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.6.0",
     "eslint": "^10.3.0",
+    "eslint-import-resolver-typescript": "^4.4.4",
+    "eslint-plugin-import-x": "^4.16.2",
+    "eslint-plugin-perfectionist": "^5.9.0",
+    "eslint-plugin-unicorn": "^64.0.0",
+    "globals": "^17.6.0",
     "tsx": "^4.21.0",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.59.1"

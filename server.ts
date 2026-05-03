@@ -12,8 +12,8 @@ const shutdown = async (signal: string) => {
     closeDb();
     console.log('Shutdown complete.');
     process.exit(0);
-  } catch (err) {
-    console.error('Error during shutdown:', err);
+  } catch (error) {
+    console.error('Error during shutdown:', error);
     process.exit(1);
   }
 };
