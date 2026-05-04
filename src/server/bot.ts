@@ -368,44 +368,52 @@ client.on('interactionCreate', async interaction => {
     if (!(await checkAdminPermission(interaction))) return;
 
     try {
-      const users = db.prepare('SELECT * FROM tracked_users').all() as TrackedUser[];
+      const users = db.prepare('SELECT * FROM tracked_users ORDER BY added_at ASC').all() as TrackedUser[];
       
       if (users.length === 0) {
         await interaction.reply({ content: 'There are currently no tracked streamers.', flags: MessageFlags.Ephemeral });
         return;
       }
 
-      let list = String.raw`**Tracked Streamers:**\n\n`;
-      for (const user of users) {
-        const addedDate = user.added_at ? new Date(user.added_at).toLocaleString() : 'Unknown';
-        const addedBy = user.added_by ? `<@${user.added_by}>` : 'Unknown';
-        list += String.raw`• **Twitch:** [${user.twitch_username}](https://twitch.tv/${user.twitch_username}) | **Discord:** <@${user.discord_id}>\n`;
-        list += String.raw`  └ Added by ${addedBy} on ${addedDate}\n\n`;
+      // Discord embeds support up to 25 fields. With 4 columns, we can show 6 rows per embed.
+      const MAX_ROWS_PER_EMBED = 6;
+      const EMBED_COLOR = 0x91_46_FF; // Twitch purple
+
+      // Split users into pages
+      const pages: TrackedUser[][] = [];
+      for (let i = 0; i < users.length; i += MAX_ROWS_PER_EMBED) {
+        pages.push(users.slice(i, i + MAX_ROWS_PER_EMBED));
       }
 
-      // Split into multiple messages if too long (Discord limit is 2000 chars)
-      const chunks = [];
-      let currentChunk = '';
-      for (const line of list.split(String.raw`\n\n`)) {
-        if (currentChunk.length + line.length + 2 > 1900) {
-          chunks.push(currentChunk);
-          currentChunk = line + String.raw`\n\n`;
-        } else {
-          currentChunk += line + String.raw`\n\n`;
+      for (let p = 0; p < pages.length; p++) {
+        const pageUsers = pages[p];
+        const embed = new EmbedBuilder().setColor(EMBED_COLOR).setTitle('Tracked Streamers');
+
+        // Add header row as a description line
+        let description = '**Discord Username** | **Twitch Username** | **Date Added** | **Added By**\n';
+
+        for (const user of pageUsers) {
+          const addedDate = user.added_at ? new Date(user.added_at).toLocaleString() : 'Unknown';
+          const discordUser = `<@${user.discord_id}>`;
+          const addedBy = `<@${user.added_by}>`;
+          description += `${discordUser} | \`${user.twitch_username}\` | ${addedDate} | ${addedBy}\n`;
         }
-      }
-      if (currentChunk) chunks.push(currentChunk);
 
-      await interaction.reply({ content: chunks[0], flags: MessageFlags.Ephemeral });
-      for (let i = 1; i < chunks.length; i++) {
-        await interaction.followUp({ content: chunks[i], flags: MessageFlags.Ephemeral });
+        embed.setDescription(description);
+
+        if (pages.length > 1) {
+          embed.setFooter({ text: `Page ${p + 1} of ${pages.length}` });
+        }
+
+        const sendMethod = p === 0 ? interaction.reply.bind(interaction) : interaction.followUp.bind(interaction);
+        await sendMethod({ embeds: [embed], flags: MessageFlags.Ephemeral });
       }
     } catch (error) {
       console.error('Error listing streamers:', error);
       await interaction.reply({ content: 'An error occurred while listing streamers.', flags: MessageFlags.Ephemeral });
     }
-  
-  break;
+
+    break;
   }
   case 'test-embed': {
     if (!(await checkAdminPermission(interaction))) return;
