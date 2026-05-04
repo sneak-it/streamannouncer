@@ -1,7 +1,17 @@
 import { startBot, stopBot } from './src/server/bot.js';
 import { closeDb } from './src/server/db.js';
+import { validateEnv } from './src/server/env.js';
 
 console.log('Starting StreamAnnouncer bot...');
+
+// Validate all required environment variables before starting
+try {
+  validateEnv();
+} catch {
+  console.error('\nConfiguration error. Aborting startup.');
+  process.exit(1);
+}
+
 startBot().catch(console.error);
 
 // Graceful shutdown handling
