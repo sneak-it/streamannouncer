@@ -1,15 +1,14 @@
 # StreamAnnouncer Bot
 
-A lightweight, Docker-ready Discord bot that automatically announces Twitch streams when users with a specific role go live.
+A lightweight, Discord bot that automatically announces Twitch streams to a channel when particular users with a specific role go live.
 
 ## Features
 
-- 🚀 **Automatic Announcements**: Automatically detects when tracked users go live on Twitch.
-- 🧹 **Auto-Cleanup**: Deletes announcement messages when the stream ends.
-- 🛡️ **Role-Based Tracking**: Only announces users who have a specific Discord role.
-- 🔒 **Admin Controls**: Restricted command for linking Discord users to Twitch accounts.
-- 🐳 **Docker Ready**: Runs as a small, unprivileged Alpine-based container.
-- 💾 **Persistent Storage**: Uses SQLite for lightweight, reliable data persistence.
+- **Automatic Announcements**: Automatically detects when tracked users go live on Twitch.
+- **Auto-Cleanup**: Deletes announcement messages when the stream ends.
+- **Role-Based Tracking**: Only announces users who have a specific Discord role.
+- **Admin Controls**: Restricted command for linking Discord users to Twitch accounts.
+- **Docker Ready**: Runs as a small, unprivileged Alpine-based container.
 
 ## Prerequisites
 
@@ -46,8 +45,8 @@ In the **Bot** tab of the Discord Developer Portal, you must toggle the followin
 1. **Clone the repository**:
 
    ```bash
-   git clone https://github.com/yourusername/stream-announcer.git
-   cd stream-announcer
+   git clone https://github.com/sneak-it/streamannouncer.git
+   cd streamannouncer
    ```
 
 2. **Configure environment variables**:
@@ -92,16 +91,3 @@ To run the bot locally without Docker:
 npm install
 npm run dev
 ```
-
-## Security
-
-This bot is designed with security in mind:
-
-- Runs as an unprivileged user in Docker.
-- Drops all Linux capabilities.
-- Prevents privilege escalation.
-- Validates all user inputs.
-
-## License
-
-This project is licensed under the **Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)** license. See the [LICENSE](LICENSE) file for details.

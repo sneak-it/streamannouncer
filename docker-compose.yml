@@ -1,7 +1,7 @@
 services:
-  stream-announcer:
+  streamannouncer:
     build: .
-    container_name: stream-announcer-bot
+    container_name: streamannouncerbot
     restart: unless-stopped
     # Run as the unprivileged node user (uid 1000)
     user: "1000:1000"

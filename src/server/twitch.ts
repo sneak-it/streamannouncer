@@ -64,42 +64,86 @@ const MAX_RETRY_ATTEMPTS = 3;
 const INITIAL_BACKOFF_MS = 1000;
 
 /**
- * Handles Twitch API rate limits with exponential backoff.
- * Respects the Ratelimit-Reset header when available.
+ * Parses the Ratelimit-Reset header and waits if present.
+ * Returns true if a wait was performed, false otherwise.
  */
-async function handleRateLimit(response: Response, operation: string): Promise<void> {
-  if (response.status !== 429) return;
+function handleRateLimitHeader(response: Response): boolean {
+  if (response.status !== 429) return false;
   
   const resetHeader = response.headers.get(RATE_LIMIT_RESET_HEADER);
   if (resetHeader) {
     const resetTime = Number.parseInt(resetHeader, 10);
     const waitTime = (resetTime * 1000) - Date.now() + 1000;
     if (waitTime > 0) {
-      console.warn(`Twitch API rate limited for ${operation}. Waiting ${waitTime}ms...`);
-      await new Promise(resolve => setTimeout(resolve, waitTime));
+      console.warn(`Twitch API rate limited. Waiting ${waitTime}ms until reset...`);
+      return true;
     }
-  } else {
-    // Fallback: exponential backoff
-    console.warn(`Twitch API rate limited for ${operation}. Using exponential backoff.`);
-    for (let attempt = 1; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
-      const backoffTime = INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
-      console.warn(`Retry ${attempt}/${MAX_RETRY_ATTEMPTS} in ${backoffTime}ms...`);
-      await new Promise(resolve => setTimeout(resolve, backoffTime));
+  }
+  return false;
+}
+
+/**
+ * Wraps a Twitch API fetch with automatic retry on 429 (rate limit).
+ * Respects Ratelimit-Reset header and uses exponential backoff as fallback.
+ * Does NOT make test API calls to check rate limit status.
+ */
+async function fetchWithRetry<T>(
+  operation: string,
+  fetchFn: () => Promise<Response>,
+  parseFn: (data: unknown) => T
+): Promise<T> {
+  let lastNonRateLimitError: Error | undefined;
+  
+  for (let attempt = 0; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
+    try {
+      const response = await fetchFn();
       
-      // Try again after backoff
-      const clientId = process.env.TWITCH_CLIENT_ID;
-      if (clientId) {
-        const testResponse = await fetch(`https://api.twitch.tv/helix/streams?user_id=test`, {
-          headers: {
-            'Client-ID': clientId,
-            'Authorization': `Bearer ${await getTwitchToken()}`
-          }
-        });
-        if (testResponse.ok) return;
+      if (response.ok) {
+        const data = await response.json() as T;
+        return parseFn(data);
+      }
+      
+      // Auth failure: do not retry, clear token and fail immediately
+      if (response.status === 401) {
+        clearTwitchToken();
+        throw new TwitchApiError('Twitch authentication failed', response.status);
+      }
+      
+      // Rate limit (429): wait and retry
+      if (response.status === 429 && attempt < MAX_RETRY_ATTEMPTS) {
+        if (handleRateLimitHeader(response)) {
+          // Already waited for reset header, retry once
+          continue;
+        }
+        // No reset header: use exponential backoff
+        const backoffTime = INITIAL_BACKOFF_MS * Math.pow(2, attempt);
+        console.warn(`Twitch API rate limited for ${operation}. Retrying in ${backoffTime}ms (attempt ${attempt + 1}/${MAX_RETRY_ATTEMPTS})...`);
+        await new Promise(resolve => setTimeout(resolve, backoffTime));
+        continue;
+      }
+      
+      // Non-retryable error: throw immediately
+      throw new TwitchApiError(
+        `Twitch API error for ${operation}: ${response.statusText} (${response.status})`,
+        response.status,
+        response.headers
+      );
+    } catch (error) {
+      // Re-throw auth failures immediately
+      if (error instanceof TwitchApiError && error.statusCode === 401) {
+        throw error;
+      }
+      // For other errors (network, parse), retry with backoff
+      lastNonRateLimitError = error instanceof Error ? error : new Error(String(error));
+      if (attempt < MAX_RETRY_ATTEMPTS) {
+        const backoffTime = INITIAL_BACKOFF_MS * Math.pow(2, attempt);
+        console.warn(`Error during ${operation}: ${lastNonRateLimitError.message}. Retrying in ${backoffTime}ms...`);
+        await new Promise(resolve => setTimeout(resolve, backoffTime));
       }
     }
-    throw new TwitchApiError(`Twitch API rate limited after ${MAX_RETRY_ATTEMPTS} retries`);
   }
+  
+  throw lastNonRateLimitError ?? new TwitchApiError(`Failed to ${operation} after ${MAX_RETRY_ATTEMPTS} retries`);
 }
 
 // Token management with race condition protection
@@ -163,28 +207,21 @@ export async function getStreams(usernames: string[]) {
   
   const token = await getTwitchToken();
   const clientId = process.env.TWITCH_CLIENT_ID;
-  
   const params = new URLSearchParams();
   for (const u of usernames) params.append('user_login', u);
   
-  const response = await fetch(`https://api.twitch.tv/helix/streams?${params.toString()}`, {
-    headers: {
-      'Client-ID': clientId!,
-      'Authorization': `Bearer ${token}`
-    }
-  });
-
-  if (!response.ok) {
-    if (response.status === 401) {
-      clearTwitchToken();
-      throw new TwitchApiError('Twitch authentication failed', response.status);
-    }
-    await handleRateLimit(response, 'getStreams');
-    throw new TwitchApiError('Failed to fetch streams', response.status, response.headers);
-  }
-
-  const data = await response.json() as TwitchStreamsResponse;
-  return data.data; // Array of stream objects
+  const url = `https://api.twitch.tv/helix/streams?${params.toString()}`;
+  
+  return fetchWithRetry<TwitchStream[]>(
+    'getStreams',
+    () => fetch(url, {
+      headers: {
+        'Client-ID': clientId!,
+        'Authorization': `Bearer ${token}`
+      }
+    }),
+    (data) => ((data as TwitchStreamsResponse).data ?? [])
+  );
 }
 
 export async function getUsers(usernames: string[]) {
@@ -192,28 +229,21 @@ export async function getUsers(usernames: string[]) {
   
   const token = await getTwitchToken();
   const clientId = process.env.TWITCH_CLIENT_ID;
-  
   const params = new URLSearchParams();
   for (const u of usernames) params.append('login', u);
   
-  const response = await fetch(`https://api.twitch.tv/helix/users?${params.toString()}`, {
-    headers: {
-      'Client-ID': clientId!,
-      'Authorization': `Bearer ${token}`
-    }
-  });
-
-  if (!response.ok) {
-    if (response.status === 401) {
-      clearTwitchToken();
-      throw new TwitchApiError('Twitch authentication failed', response.status);
-    }
-    await handleRateLimit(response, 'getUsers');
-    throw new TwitchApiError('Failed to fetch users', response.status, response.headers);
-  }
-
-  const data = await response.json() as TwitchUsersResponse;
-  return data.data; // Array of user objects
+  const url = `https://api.twitch.tv/helix/users?${params.toString()}`;
+  
+  return fetchWithRetry<TwitchUser[]>(
+    'getUsers',
+    () => fetch(url, {
+      headers: {
+        'Client-ID': clientId!,
+        'Authorization': `Bearer ${token}`
+      }
+    }),
+    (data) => ((data as TwitchUsersResponse).data ?? [])
+  );
 }
 
 export async function getStreamsByIds(userIds: string[]) {
@@ -221,28 +251,21 @@ export async function getStreamsByIds(userIds: string[]) {
   
   const token = await getTwitchToken();
   const clientId = process.env.TWITCH_CLIENT_ID;
-  
   const params = new URLSearchParams();
   for (const id of userIds) params.append('user_id', id);
   
-  const response = await fetch(`https://api.twitch.tv/helix/streams?${params.toString()}`, {
-    headers: {
-      'Client-ID': clientId!,
-      'Authorization': `Bearer ${token}`
-    }
-  });
-
-  if (!response.ok) {
-    if (response.status === 401) {
-      clearTwitchToken();
-      throw new TwitchApiError('Twitch authentication failed', response.status);
-    }
-    await handleRateLimit(response, 'getStreamsByIds');
-    throw new TwitchApiError('Failed to fetch streams by ID', response.status, response.headers);
-  }
-
-  const data = await response.json() as TwitchStreamsResponse;
-  return data.data; // Array of stream objects
+  const url = `https://api.twitch.tv/helix/streams?${params.toString()}`;
+  
+  return fetchWithRetry<TwitchStream[]>(
+    'getStreamsByIds',
+    () => fetch(url, {
+      headers: {
+        'Client-ID': clientId!,
+        'Authorization': `Bearer ${token}`
+      }
+    }),
+    (data) => ((data as TwitchStreamsResponse).data ?? [])
+  );
 }
 
 export async function getUsersByIds(userIds: string[]) {
@@ -250,26 +273,19 @@ export async function getUsersByIds(userIds: string[]) {
   
   const token = await getTwitchToken();
   const clientId = process.env.TWITCH_CLIENT_ID;
-  
   const params = new URLSearchParams();
   for (const id of userIds) params.append('id', id);
   
-  const response = await fetch(`https://api.twitch.tv/helix/users?${params.toString()}`, {
-    headers: {
-      'Client-ID': clientId!,
-      'Authorization': `Bearer ${token}`
-    }
-  });
-
-  if (!response.ok) {
-    if (response.status === 401) {
-      clearTwitchToken();
-      throw new TwitchApiError('Twitch authentication failed', response.status);
-    }
-    await handleRateLimit(response, 'getUsersByIds');
-    throw new TwitchApiError('Failed to fetch users by ID', response.status, response.headers);
-  }
-
-  const data = await response.json() as TwitchUsersResponse;
-  return data.data; // Array of user objects
+  const url = `https://api.twitch.tv/helix/users?${params.toString()}`;
+  
+  return fetchWithRetry<TwitchUser[]>(
+    'getUsersByIds',
+    () => fetch(url, {
+      headers: {
+        'Client-ID': clientId!,
+        'Authorization': `Bearer ${token}`
+      }
+    }),
+    (data) => ((data as TwitchUsersResponse).data ?? [])
+  );
 }

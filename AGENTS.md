@@ -32,5 +32,5 @@ This project is a Discord bot that announces Twitch streams.
 ## Development Rules
 
 - Always run `lint_applet` and `compile_applet` after changes.
-- Maintain the `node:22-slim` Dockerfile structure.
+- Maintain the `node:24-alpine` Dockerfile structure.
 - Ensure `PermissionsBitField.Flags.Administrator` or `DISCORD_ADMIN_ROLE_ID` is checked for admin commands.
