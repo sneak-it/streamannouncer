@@ -1,16 +1,24 @@
+FROM node:24-alpine AS builder
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci
+
+COPY . .
+RUN npm run build
+
 FROM node:24-alpine AS production
 
 # Set working directory
 WORKDIR /app
 
-# Copy package files first to leverage Docker layer caching
+# Copy package files
 COPY package*.json ./
+RUN npm ci --omit=dev
 
-# Install production dependencies and tsx for running the TypeScript file
-RUN npm ci --omit=dev && npm install tsx
-
-# Copy the rest of the application code and set ownership to the 'node' user
-COPY --chown=node:node . .
+# Copy compiled JavaScript from builder stage
+COPY --from=builder /app/dist ./dist
 
 # Create the data directory for the SQLite database and set ownership
 RUN mkdir -p /app/data && chown node:node /app/data
@@ -22,4 +30,4 @@ USER node
 ENV NODE_ENV=production
 
 # Run the bot
-CMD ["npx", "tsx", "server.ts"]
+CMD ["node", "dist/server.js"]

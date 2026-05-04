@@ -1,4 +1,4 @@
-import type { TwitchUser } from './twitch.js';
+import type { TwitchStream, TwitchUser } from './twitch.js';
 import type { ChatInputCommandInteraction, GuildMember, TextChannel } from 'discord.js';
 
 import fs from 'node:fs';
@@ -61,6 +61,116 @@ async function getUserProfile(userId: string): Promise<TwitchUser | undefined> {
   } catch (error) {
     console.error(`Failed to get user profile for ${userId}:`, error);
   }
+}
+
+/**
+ * Formats stream duration into a human-readable string.
+ */
+function formatStreamDuration(startedAt: string): string {
+  const start = new Date(startedAt).getTime();
+  const now = Date.now();
+  const diff = Math.floor((now - start) / 1000);
+
+  const hours = Math.floor(diff / 3600);
+  const minutes = Math.floor((diff % 3600) / 60);
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  return `${minutes}m`;
+}
+
+/**
+ * Twitch logo URL for embed footer icon.
+ */
+const TWITCH_FOOTER_ICON_URL =
+  'https://www.google.com/s2/favicons?domain=twitch.tv&sz=128';
+
+/**
+ * Builds a rich embed for a live Twitch stream announcement.
+ */
+function buildStreamEmbed(
+  stream: {
+    user_id: string;
+    user_login: string;
+    user_name: string;
+    title: string;
+    game_name: string;
+    viewer_count: number;
+    thumbnail_url: string;
+    started_at: string;
+    language?: string;
+    tags?: string[];
+    is_mature?: boolean;
+  },
+  profile?: TwitchUser,
+): EmbedBuilder {
+  const thumbnailCacheBuster = Math.floor(Date.now() / (20 * 60 * 1000));
+  const thumbnailUrl = stream.thumbnail_url
+    .replace('{width}', '400')
+    .replace('{height}', '225')
+    + `?t=${thumbnailCacheBuster}`;
+
+  const embed = new EmbedBuilder()
+    .setColor('#9146FF')
+    .setTitle(stream.title || 'Untitled Stream')
+    .setURL(`https://twitch.tv/${stream.user_login}`)
+    .setAuthor({
+      name: stream.user_name,
+      iconURL: profile?.profile_image_url,
+      url: `https://twitch.tv/${stream.user_login}`,
+    })
+    .setDescription(
+      `🟢 **LIVE** now playing **${stream.game_name || 'Just Chatting'}**\n\n${stream.title || ''}`,
+    );
+
+  // Thumbnail (small avatar in top-right)
+  if (profile?.profile_image_url) {
+    embed.setThumbnail(profile.profile_image_url);
+  }
+
+  // Game field with broadcaster type badge
+  const broadcasterBadge =
+    profile?.broadcaster_type === 'partner'
+      ? '\u{1F534} Partner'
+      : (profile?.broadcaster_type === 'affiliate'
+        ? '\u{1F4E5} Affiliate'
+        : '');
+  const gameValue = broadcasterBadge
+    ? `${stream.game_name || 'Just Chatting'}\n${broadcasterBadge}`
+    : stream.game_name || 'Just Chatting';
+
+  embed.addFields(
+    { name: '\u{1F3AE} Game', value: gameValue, inline: true },
+    { name: '\u{1F441} Viewers', value: stream.viewer_count.toLocaleString(), inline: true },
+    { name: '\u23F1 Duration', value: formatStreamDuration(stream.started_at), inline: true },
+  );
+
+  // Language field (if available)
+  if (stream.language) {
+    embed.addFields({ name: '\u{1F310} Language', value: stream.language.toUpperCase(), inline: true });
+  }
+
+  // Tags field (full width, top 3)
+  if (stream.tags && stream.tags.length > 0) {
+    embed.addFields({
+      name: '\u{1F3F7}\uFE0F Tags',
+      value: stream.tags.slice(0, 3).join(', '),
+      inline: false,
+    });
+  }
+
+  // Full-size image (compact preview, clickable to expand)
+  embed.setImage(thumbnailUrl);
+
+  // Timestamp and footer
+  embed.setTimestamp(new Date(stream.started_at));
+  embed.setFooter({
+    text: `${formatStreamDuration(stream.started_at)} ago • Started at ${new Date(stream.started_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
+    iconURL: TWITCH_FOOTER_ICON_URL,
+  });
+
+  return embed;
 }
 
 const client = new Client({
@@ -332,20 +442,10 @@ client.on('interactionCreate', async interaction => {
         .replace('{mention}', `<@${interaction.user.id}>`)
         .replace('{url}', `https://twitch.tv/${stream.user_login}`);
 
-      const thumbnailCacheBuster = Math.floor(Date.now() / (20 * 60 * 1000));
-      const thumbnailUrl = stream.thumbnail_url.replace('{width}', '1280').replace('{height}', '720') + `?t=${thumbnailCacheBuster}`;
-
-      const embed = new EmbedBuilder()
-        .setTitle(stream.title || 'Untitled Stream')
-        .setURL(`https://twitch.tv/${stream.user_login}`)
-        .setAuthor({ name: stream.user_name, iconURL: twitchUser.profile_image_url, url: `https://twitch.tv/${stream.user_login}` })
-        .addFields(
-          { name: 'Game', value: stream.game_name || 'Just Chatting', inline: true },
-          { name: 'Viewers', value: stream.viewer_count.toString(), inline: true }
-        )
-        .setImage(thumbnailUrl)
-        .setColor('#9146FF')
-        .setTimestamp(new Date(stream.started_at));
+      const embed = buildStreamEmbed(
+        { ...stream, language: 'en', tags: ['English', 'Entertainment'] },
+        twitchUser,
+      );
 
       const channelId = process.env.DISCORD_CHANNEL_ID;
       if (!channelId) {
@@ -484,7 +584,7 @@ async function executePoll() {
       chunks.push(twitchIds.slice(i, i + 100));
     }
 
-    const liveStreams: { user_id: string; user_login: string; user_name: string; title: string; game_name: string; viewer_count: number; thumbnail_url: string; started_at: string }[] = [];
+    const liveStreams: TwitchStream[] = [];
     const failedTwitchIds = new Set<string>();
     for (const chunk of chunks) {
       try {
@@ -554,20 +654,7 @@ async function executePoll() {
 
       const username = stream.user_login;
       
-      const thumbnailCacheBuster = Math.floor(Date.now() / (20 * 60 * 1000));
-      const thumbnailUrl = stream.thumbnail_url.replace('{width}', '1280').replace('{height}', '720') + `?t=${thumbnailCacheBuster}`;
-      
-      const embed = new EmbedBuilder()
-        .setTitle(stream.title || 'Untitled Stream')
-        .setURL(`https://twitch.tv/${username}`)
-        .setAuthor({ name: stream.user_name, iconURL: profile?.profile_image_url, url: `https://twitch.tv/${username}` })
-        .addFields(
-          { name: 'Game', value: stream.game_name || 'Just Chatting', inline: true },
-          { name: 'Viewers', value: stream.viewer_count.toString(), inline: true }
-        )
-        .setImage(thumbnailUrl)
-        .setColor('#9146FF')
-        .setTimestamp(new Date(stream.started_at));
+      const embed = buildStreamEmbed(stream, profile);
 
       const announcementText = announcementMsg
         .replace('{user}', stream.user_name)

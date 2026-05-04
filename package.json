@@ -7,7 +7,7 @@
   },
   "scripts": {
     "dev": "tsx --env-file-if-exists=.env server.ts",
-    "build": "tsc --noEmit",
+    "build": "tsc",
     "start": "tsx --env-file-if-exists=.env server.ts",
     "lint": "eslint . && tsc --noEmit"
   },
