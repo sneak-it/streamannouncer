@@ -21,6 +21,7 @@ const ENV_VARS: EnvVarInfo[] = [
   { name: 'DISCORD_ROLE_ID', required: false, description: 'Discord role ID for streamer filtering (optional)' },
   { name: 'DISCORD_ADMIN_ROLE_ID', required: false, description: 'Discord admin role ID for command access (optional)' },
   { name: 'DISCORD_ANNOUNCEMENT_MESSAGE', required: false, description: 'Custom announcement message template (optional, uses default if not set)' },
+  { name: 'TZ', required: false, description: 'Timezone for the container (optional, defaults to America/New_York)' },
 ];
 
 /**

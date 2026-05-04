@@ -81,12 +81,6 @@ function formatStreamDuration(startedAt: string): string {
 }
 
 /**
- * Twitch logo URL for embed footer icon.
- */
-const TWITCH_FOOTER_ICON_URL =
-  'https://www.google.com/s2/favicons?domain=twitch.tv&sz=128';
-
-/**
  * Builds a rich embed for a live Twitch stream announcement.
  */
 function buildStreamEmbed(
@@ -163,13 +157,8 @@ function buildStreamEmbed(
   // Full-size image (compact preview, clickable to expand)
   embed.setImage(thumbnailUrl);
 
-  // Timestamp and footer
+  // Timestamp
   embed.setTimestamp(new Date(stream.started_at));
-  embed.setFooter({
-    text: `${formatStreamDuration(stream.started_at)} ago • Started at ${new Date(stream.started_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
-    iconURL: TWITCH_FOOTER_ICON_URL,
-  });
-
   return embed;
 }
 
