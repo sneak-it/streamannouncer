@@ -1,5 +1,5 @@
 import type { TwitchStream, TwitchUser } from './twitch.js';
-import type { ButtonInteraction, ChatInputCommandInteraction, GuildMember, TextChannel } from 'discord.js';
+import type { ButtonInteraction, ChatInputCommandInteraction, TextChannel } from 'discord.js';
 
 import fs from 'node:fs';
 
@@ -49,6 +49,7 @@ const userProfileCache = new Map<string, UserProfileCacheEntry>();
 interface ListStreamersState {
   users: TrackedUser[];
   currentPage: number;
+  userId: string;
 }
 const listStreamersState = new Map<string, ListStreamersState>();
 
@@ -269,11 +270,8 @@ async function checkAdminPermission(interaction: ChatInputCommandInteraction): P
   
   if (!hasPermission && interaction.member) {
     const member = interaction.member;
-    if (Array.isArray(member.roles)) {
-      hasPermission = member.roles.includes(adminRoleId);
-    } else {
-      const guildMember = member as GuildMember;
-      hasPermission = guildMember.roles.cache.has(adminRoleId);
+    if ('roles' in member && typeof member.roles === 'object' && 'cache' in member.roles && member.roles.cache instanceof Map && member.roles.cache.has(adminRoleId)) {
+      hasPermission = true;
       
       if (!hasPermission && interaction.guild) {
          try {
@@ -369,7 +367,7 @@ client.on('interactionCreate', async interaction => {
       if (!state) return;
 
       // Only the original user can interact with the buttons
-      if (interaction.user.id !== interaction.user.id) {
+      if (interaction.user.id !== state.userId) {
         await interaction.reply({ content: 'These buttons are not for you!', flags: MessageFlags.Ephemeral });
         return;
       }
@@ -485,7 +483,7 @@ client.on('interactionCreate', async interaction => {
 
       // Store state for pagination
       const totalPages = Math.ceil(users.length / MAX_ROWS_PER_EMBED);
-      listStreamersState.set(interaction.user.id, { users, currentPage: 0 });
+      listStreamersState.set(interaction.user.id, { users, currentPage: 0, userId: interaction.user.id });
 
       await showPage(interaction, 0, MAX_ROWS_PER_EMBED, EMBED_COLOR, totalPages);
     } catch (error) {
@@ -498,8 +496,7 @@ client.on('interactionCreate', async interaction => {
   case 'test-embed': {
     if (!(await checkAdminPermission(interaction))) return;
 
-    const username = interaction.options.getString('username')?.toLowerCase();
-    if (!username) return;
+    const username = (interaction.options.getString('username') ?? '').toLowerCase();
 
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
@@ -568,7 +565,6 @@ export async function startBot() {
   }
   try {
     await client.login(token);
-    logger.info({ username: client.user?.tag }, 'Bot logged in');
   } catch (error) {
     logger.error({ err: error }, 'Failed to login to Discord');
     throw error;
@@ -589,8 +585,10 @@ export async function stopBot() {
 
 /**
  * Runs the polling loop with race condition protection.
+ * Uses isPolling flag to prevent concurrent executions from setInterval.
  */
 async function runPoll() {
+  if (isPolling) return;
   await pollLock;
   pollLock = pollLock.then(async () => {
     try {
