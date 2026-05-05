@@ -240,6 +240,9 @@ client.once(Events.ClientReady, async () => {
       botLogger.error({ err: error }, 'Failed to reload application commands');
     }
   }
+
+  // Run initial poll after bot is ready
+  await runPoll();
 });
 
 async function checkAdminPermission(interaction: ChatInputCommandInteraction): Promise<boolean> {
