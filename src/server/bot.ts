@@ -33,12 +33,16 @@ interface ActiveStream {
 // Constants
 const HEALTH_FILE = '/tmp/healthy';
 const USER_PROFILE_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
+const USER_PROFILE_CACHE_MAX_SIZE = 1000;
 
 // Polling with Promise-based locking to prevent race conditions
 let isPolling = false;
 let pollLock = Promise.resolve();
 
-// User profile cache
+// Polling timer reference for cleanup on shutdown
+let pollIntervalId: ReturnType<typeof setInterval> | undefined;
+
+// User profile cache with LRU eviction
 interface UserProfileCacheEntry {
   profile: TwitchUser;
   timestamp: number;
@@ -53,8 +57,43 @@ interface ListStreamersState {
 }
 const listStreamersState = new Map<string, ListStreamersState>();
 
+// Pre-compiled database statements to reduce GC pressure
+const selectAllTrackedUsersStmt = db.prepare('SELECT * FROM tracked_users ORDER BY added_at ASC');
+const upsertTrackedUserStmt = db.prepare(`
+  INSERT INTO tracked_users (discord_id, twitch_username, twitch_id, added_at, added_by)
+  VALUES (?, ?, ?, ?, ?)
+  ON CONFLICT(discord_id) DO UPDATE SET
+    twitch_username = excluded.twitch_username,
+    twitch_id = excluded.twitch_id,
+    added_at = excluded.added_at,
+    added_by = excluded.added_by
+`);
+const deleteTrackedUserByDiscordIdStmt = db.prepare('DELETE FROM tracked_users WHERE discord_id = ?');
+const deleteTrackedUserByTwitchUsernameStmt = db.prepare('DELETE FROM tracked_users WHERE twitch_username = ?');
+const selectAllActiveStreamsStmt = db.prepare('SELECT * FROM active_streams');
+const deleteActiveStreamByTwitchIdStmt = db.prepare('DELETE FROM active_streams WHERE twitch_id = ?');
+const updateTrackedUserTwitchUsernameStmt = db.prepare('UPDATE tracked_users SET twitch_username = ? WHERE twitch_id = ?');
+const insertActiveStreamStmt = db.prepare(`
+  INSERT INTO active_streams (twitch_id, discord_id, message_id, channel_id, start_time)
+  VALUES (?, ?, ?, ?, ?)
+`);
+
+/**
+ * Evicts the least recently used entry from the cache when full.
+ */
+function evictLeastRecentlyUsed(): void {
+  if (userProfileCache.size > 0) {
+    // The first entry in a Map is the oldest (insertion order)
+    const firstKey = userProfileCache.keys().next().value;
+    if (firstKey !== undefined) {
+      userProfileCache.delete(firstKey);
+    }
+  }
+}
+
 /**
  * Gets a user profile from cache or fetches it from Twitch API.
+ * Uses LRU eviction when cache reaches max size.
  */
 async function getUserProfile(userId: string): Promise<TwitchUser | undefined> {
   const cached = userProfileCache.get(userId);
@@ -65,6 +104,12 @@ async function getUserProfile(userId: string): Promise<TwitchUser | undefined> {
   try {
     const users = await getUsersByIds([userId]);
     if (users.length > 0) {
+      // Evict expired entry before setting new one
+      if (cached) userProfileCache.delete(userId);
+      // Enforce max size with LRU eviction
+      while (userProfileCache.size >= USER_PROFILE_CACHE_MAX_SIZE) {
+        evictLeastRecentlyUsed();
+      }
       userProfileCache.set(userId, {
         profile: users[0],
         timestamp: Date.now()
@@ -74,6 +119,13 @@ async function getUserProfile(userId: string): Promise<TwitchUser | undefined> {
   } catch (error) {
     logger.error({ err: error, user_id: userId }, 'Failed to get user profile');
   }
+  
+  // Clean up expired entry on cache miss
+  if (cached && Date.now() - cached.timestamp >= USER_PROFILE_CACHE_TTL) {
+    userProfileCache.delete(userId);
+  }
+  
+  return undefined;
 }
 
 /**
@@ -385,6 +437,12 @@ client.on('interactionCreate', async interaction => {
 
       state.currentPage = newPage;
       await showPage(interaction, newPage, MAX_ROWS_PER_EMBED, EMBED_COLOR, totalPages);
+      
+      // Schedule cleanup of pagination state after 60 seconds of inactivity
+      setTimeout(() => {
+        listStreamersState.delete(interaction.user.id);
+      }, 60_000);
+      
       return;
     }
 
@@ -422,15 +480,7 @@ client.on('interactionCreate', async interaction => {
       
       const twitchUser = users[0];
 
-      db.prepare(`
-        INSERT INTO tracked_users (discord_id, twitch_username, twitch_id, added_at, added_by) 
-        VALUES (?, ?, ?, ?, ?) 
-        ON CONFLICT(discord_id) DO UPDATE SET 
-          twitch_username = excluded.twitch_username, 
-          twitch_id = excluded.twitch_id,
-          added_at = excluded.added_at,
-          added_by = excluded.added_by
-      `).run(targetUser.id, twitchUser.login, twitchUser.id, Date.now(), interaction.user.id);
+      upsertTrackedUserStmt.run(targetUser.id, twitchUser.login, twitchUser.id, Date.now(), interaction.user.id);
 
       await interaction.reply({ content: `Successfully linked Twitch account **${twitchUser.login}** to ${targetUser}!`, flags: MessageFlags.Ephemeral });
     } catch (error) {
@@ -454,9 +504,9 @@ client.on('interactionCreate', async interaction => {
     try {
       let result;
       if (targetUser) {
-        result = db.prepare('DELETE FROM tracked_users WHERE discord_id = ?').run(targetUser.id);
+        result = deleteTrackedUserByDiscordIdStmt.run(targetUser.id);
       } else if (username) {
-        result = db.prepare('DELETE FROM tracked_users WHERE twitch_username = ?').run(username);
+        result = deleteTrackedUserByTwitchUsernameStmt.run(username);
       }
 
       await (result && result.changes > 0 ? interaction.reply({ content: `Successfully removed the streamer.`, flags: MessageFlags.Ephemeral }) : interaction.reply({ content: `Could not find a tracked streamer matching that criteria.`, flags: MessageFlags.Ephemeral }));
@@ -474,7 +524,7 @@ client.on('interactionCreate', async interaction => {
     const EMBED_COLOR = 0x91_46_FF; // Twitch purple
 
     try {
-      const users = db.prepare('SELECT * FROM tracked_users ORDER BY added_at ASC').all() as TrackedUser[];
+      const users = selectAllTrackedUsersStmt.all() as TrackedUser[];
 
       if (users.length === 0) {
         await interaction.reply({ content: 'There are currently no tracked streamers.', flags: MessageFlags.Ephemeral });
@@ -572,6 +622,11 @@ export async function startBot() {
 }
 
 export async function stopBot() {
+  // Clear polling interval to prevent further execution
+  if (pollIntervalId !== undefined) {
+    clearInterval(pollIntervalId);
+    pollIntervalId = undefined;
+  }
   client.destroy();
   isReady = false;
   try {
@@ -626,7 +681,7 @@ async function executePoll() {
     }
 
     // 1. Fetch tracked users from database
-    const trackedUsers = db.prepare("SELECT * FROM tracked_users").all() as TrackedUser[];
+    const trackedUsers = selectAllTrackedUsersStmt.all() as TrackedUser[];
     botLogger.debug({ tracked_count: trackedUsers.length }, 'Fetched tracked users');
     if (trackedUsers.length === 0) return;
 
@@ -658,7 +713,7 @@ async function executePoll() {
     if (orphanedUsers.length > 0) {
       logger.info({ count: orphanedUsers.length }, 'Cleaning up orphaned tracked users');
       for (const discordId of orphanedUsers) {
-        db.prepare('DELETE FROM tracked_users WHERE discord_id = ?').run(discordId);
+        deleteTrackedUserByDiscordIdStmt.run(discordId);
       }
     }
 
@@ -696,7 +751,7 @@ async function executePoll() {
     botLogger.debug({ live_count: liveStreams.length, failed_count: failedTwitchIds.size, twitch_ids_count: twitchIds.length }, 'Fetched live streams');
 
     const liveUserIds = new Set(liveStreams.map(s => s.user_id));
-    const activeStreams = db.prepare("SELECT * FROM active_streams").all() as ActiveStream[];
+    const activeStreams = selectAllActiveStreamsStmt.all() as ActiveStream[];
 
     // Handle offline streams (delete message)
     for (const active of activeStreams) {
@@ -714,7 +769,7 @@ async function executePoll() {
           } else {
             logger.error({ err: error, twitch_id: active.twitch_id }, 'Failed to delete message');
           }
-          db.prepare("DELETE FROM active_streams WHERE twitch_id = ?").run(active.twitch_id);
+          deleteActiveStreamByTwitchIdStmt.run(active.twitch_id);
         }
       }
     }
@@ -740,7 +795,7 @@ async function executePoll() {
       
       // Update cached username if it changed
       if (trackedUser && trackedUser.twitch_username !== stream.user_login) {
-        db.prepare('UPDATE tracked_users SET twitch_username = ? WHERE twitch_id = ?').run(stream.user_login, twitchId);
+        updateTrackedUserTwitchUsernameStmt.run(stream.user_login, twitchId);
         trackedUser.twitch_username = stream.user_login; // Update local object too
       }
 
@@ -764,16 +819,13 @@ async function executePoll() {
         } catch (error) {
           botLogger.error({ err: error, twitch_username: username }, 'Failed to update message');
           // If message deleted, remove from active_streams so it posts again next time
-          db.prepare("DELETE FROM active_streams WHERE twitch_id = ?").run(twitchId);
+          deleteActiveStreamByTwitchIdStmt.run(twitchId);
         }
       } else {
         // Post new message
         try {
           const message = await channel.send({ content: announcementText, embeds: [embed] });
-          db.prepare(`
-            INSERT INTO active_streams (twitch_id, discord_id, message_id, channel_id, start_time)
-            VALUES (?, ?, ?, ?, ?)
-          `).run(twitchId, trackedUser?.discord_id, message.id, channel.id, Date.now());
+          insertActiveStreamStmt.run(twitchId, trackedUser?.discord_id, message.id, channel.id, Date.now());
           botLogger.info({ twitch_id: twitchId, twitch_username: username, user_name: stream.user_name, game_name: stream.game_name, viewer_count: stream.viewer_count, message_id: message.id, channel_id: channel.id }, 'Stream is live, announcement posted');
         } catch (error) {
           botLogger.error({ err: error, twitch_username: username }, 'Failed to send message');
@@ -788,4 +840,4 @@ async function executePoll() {
 }
 
 // Polling loop - every 5 minutes
-setInterval(runPoll, 5 * 60 * 1000);
+pollIntervalId = setInterval(runPoll, 5 * 60 * 1000);
