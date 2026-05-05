@@ -195,8 +195,9 @@ function buildStreamEmbed(
   // Full-size image (compact preview, clickable to expand)
   embed.setImage(thumbnailUrl);
 
-  // Timestamp
-  embed.setTimestamp(new Date(stream.started_at));
+  // Footer with native Discord timestamp — renders "Last Updated  Today at 4:03pm"
+  embed.setFooter({ text: 'Last Updated' });
+  embed.setTimestamp();
   return embed;
 }
 
