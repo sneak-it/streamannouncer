@@ -158,8 +158,6 @@ function buildStreamEmbed(
     viewer_count: number;
     thumbnail_url: string;
     started_at: string;
-    language?: string;
-    tags?: string[];
     is_mature?: boolean;
   },
   profile?: TwitchUser,
@@ -180,7 +178,7 @@ function buildStreamEmbed(
       url: `https://twitch.tv/${stream.user_login}`,
     })
     .setDescription(
-      `🟢 **LIVE** now playing **${stream.game_name || 'Just Chatting'}**\n\n${stream.title || ''}`,
+      `🟢 **LIVE** now playing **${stream.game_name || 'Just Chatting'}**`,
     );
 
   // Thumbnail (small avatar in top-right)
@@ -188,36 +186,11 @@ function buildStreamEmbed(
     embed.setThumbnail(profile.profile_image_url);
   }
 
-  // Game field with broadcaster type badge
-  const broadcasterBadge =
-    profile?.broadcaster_type === 'partner'
-      ? '\u{1F534} Partner'
-      : (profile?.broadcaster_type === 'affiliate'
-        ? '\u{1F4E5} Affiliate'
-        : '');
-  const gameValue = broadcasterBadge
-    ? `${stream.game_name || 'Just Chatting'}\n${broadcasterBadge}`
-    : stream.game_name || 'Just Chatting';
-
   embed.addFields(
-    { name: '\u{1F3AE} Game', value: gameValue, inline: true },
+    { name: '\u{1F3AE} Game', value: stream.game_name || 'Just Chatting', inline: true },
     { name: '\u{1F441} Viewers', value: stream.viewer_count.toLocaleString(), inline: true },
     { name: '\u23F1 Duration', value: formatStreamDuration(stream.started_at), inline: true },
   );
-
-  // Language field (if available)
-  if (stream.language) {
-    embed.addFields({ name: '\u{1F310} Language', value: stream.language.toUpperCase(), inline: true });
-  }
-
-  // Tags field (full width, top 3)
-  if (stream.tags && stream.tags.length > 0) {
-    embed.addFields({
-      name: '\u{1F3F7}\uFE0F Tags',
-      value: stream.tags.slice(0, 3).join(', '),
-      inline: false,
-    });
-  }
 
   // Full-size image (compact preview, clickable to expand)
   embed.setImage(thumbnailUrl);
@@ -578,7 +551,7 @@ client.on('interactionCreate', async interaction => {
         .replace('{url}', `https://twitch.tv/${stream.user_login}`);
 
       const embed = buildStreamEmbed(
-        { ...stream, language: 'en', tags: ['English', 'Entertainment'] },
+        { ...stream },
         twitchUser,
       );
 
