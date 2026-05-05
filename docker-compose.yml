@@ -1,9 +1,9 @@
 services:
   streamannouncer:
-    build: .
+    image: ghcr.io/sneak-it/streamannouncer:dev
     container_name: streamannouncerbot
     restart: unless-stopped
-    # Run as the unprivileged node user (uid 1000)
+    # Run as unprivileged node user (uid 1000)
     user: "1000:1000"
     # Security baselines: drop all capabilities and prevent privilege escalation
     security_opt:
@@ -24,3 +24,8 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
