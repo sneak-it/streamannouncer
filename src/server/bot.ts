@@ -1,5 +1,5 @@
 import type { TwitchStream, TwitchUser } from './twitch.js';
-import type { ChatInputCommandInteraction, GuildMember, TextChannel } from 'discord.js';
+import type { ButtonInteraction, ChatInputCommandInteraction, GuildMember, TextChannel } from 'discord.js';
 
 import fs from 'node:fs';
 
@@ -7,7 +7,11 @@ import db from './db.js';
 import { logger } from './logger.js';
 import { clearTwitchToken, getStreamsByIds, getUsers, getUsersByIds, TwitchApiError } from './twitch.js';
 
-import { Client, EmbedBuilder, Events, GatewayIntentBits, MessageFlags, PermissionsBitField, REST, Routes, SlashCommandBuilder } from 'discord.js';
+import {
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, EmbedBuilder, Events,
+  GatewayIntentBits, MessageFlags, PermissionsBitField, REST, Routes,
+  SlashCommandBuilder
+} from 'discord.js';
 
 
 interface TrackedUser {
@@ -40,6 +44,13 @@ interface UserProfileCacheEntry {
   timestamp: number;
 }
 const userProfileCache = new Map<string, UserProfileCacheEntry>();
+
+// State for paginated /list-streamers button interactions
+interface ListStreamersState {
+  users: TrackedUser[];
+  currentPage: number;
+}
+const listStreamersState = new Map<string, ListStreamersState>();
 
 /**
  * Gets a user profile from cache or fetches it from Twitch API.
@@ -282,7 +293,106 @@ async function checkAdminPermission(interaction: ChatInputCommandInteraction): P
   return true;
 }
 
+/**
+ * Builds an embed for a single page of the /list-streamers command.
+ */
+function buildListEmbed(
+  users: TrackedUser[],
+  startIndex: number,
+  maxRows: number,
+  color: number,
+  currentPage: number,
+  totalPages: number,
+): EmbedBuilder {
+  const pageUsers = users.slice(startIndex, startIndex + maxRows);
+  const embed = new EmbedBuilder().setColor(color).setTitle('Tracked Streamers');
+
+  let description = '**Discord Username** | **Twitch Username** | **Date Added** | **Added By**\n';
+
+  for (const user of pageUsers) {
+    const addedDate = user.added_at ? new Date(user.added_at).toLocaleString() : 'Unknown';
+    const discordUser = `<@${user.discord_id}>`;
+    const addedBy = `<@${user.added_by}>`;
+    description += `${discordUser} | \`${user.twitch_username}\` | ${addedDate} | ${addedBy}\n`;
+  }
+
+  embed.setDescription(description);
+
+  if (totalPages > 1) {
+    embed.setFooter({ text: `Page ${currentPage + 1} of ${totalPages}` });
+  }
+
+  return embed;
+}
+
+/**
+ * Sends or edits the /list-streamers message for the given page.
+ */
+async function showPage(
+  interaction: ChatInputCommandInteraction | ButtonInteraction,
+  currentPage: number,
+  maxRows: number,
+  color: number,
+  totalPages: number,
+): Promise<void> {
+  const state = listStreamersState.get(interaction.user.id);
+  if (!state) return;
+
+  const startIndex = currentPage * maxRows;
+  const embed = buildListEmbed(state.users, startIndex, maxRows, color, currentPage, totalPages);
+
+  const prevButton = new ButtonBuilder()
+    .setCustomId('list_prev')
+    .setLabel('Previous')
+    .setStyle(ButtonStyle.Secondary)
+    .setDisabled(currentPage === 0);
+
+  const nextButton = new ButtonBuilder()
+    .setCustomId('list_next')
+    .setLabel('Next')
+    .setStyle(ButtonStyle.Secondary)
+    .setDisabled(currentPage === totalPages - 1);
+
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(prevButton, nextButton);
+
+  const editOpts = { embeds: [embed], components: [row] };
+  await (interaction.replied || interaction.deferred
+    ? interaction.editReply(editOpts)
+    : interaction.reply({ ...editOpts, flags: MessageFlags.Ephemeral }));
+}
+
 client.on('interactionCreate', async interaction => {
+  // Handle button clicks for /list-streamers pagination
+  if (interaction.isButton()) {
+    if (interaction.customId === 'list_prev' || interaction.customId === 'list_next') {
+      const state = listStreamersState.get(interaction.user.id);
+      if (!state) return;
+
+      // Only the original user can interact with the buttons
+      if (interaction.user.id !== interaction.user.id) {
+        await interaction.reply({ content: 'These buttons are not for you!', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      const MAX_ROWS_PER_EMBED = 6;
+      const EMBED_COLOR = 0x91_46_FF;
+      const totalPages = Math.ceil(state.users.length / MAX_ROWS_PER_EMBED);
+
+      let newPage = state.currentPage;
+      if (interaction.customId === 'list_prev') {
+        newPage = Math.max(0, newPage - 1);
+      } else if (interaction.customId === 'list_next') {
+        newPage = Math.min(totalPages - 1, newPage + 1);
+      }
+
+      state.currentPage = newPage;
+      await showPage(interaction, newPage, MAX_ROWS_PER_EMBED, EMBED_COLOR, totalPages);
+      return;
+    }
+
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
 
   switch (interaction.commandName) {
@@ -362,47 +472,22 @@ client.on('interactionCreate', async interaction => {
   case 'list-streamers': {
     if (!(await checkAdminPermission(interaction))) return;
 
+    const MAX_ROWS_PER_EMBED = 6;
+    const EMBED_COLOR = 0x91_46_FF; // Twitch purple
+
     try {
       const users = db.prepare('SELECT * FROM tracked_users ORDER BY added_at ASC').all() as TrackedUser[];
-      
+
       if (users.length === 0) {
         await interaction.reply({ content: 'There are currently no tracked streamers.', flags: MessageFlags.Ephemeral });
         return;
       }
 
-      // Discord embeds support up to 25 fields. With 4 columns, we can show 6 rows per embed.
-      const MAX_ROWS_PER_EMBED = 6;
-      const EMBED_COLOR = 0x91_46_FF; // Twitch purple
+      // Store state for pagination
+      const totalPages = Math.ceil(users.length / MAX_ROWS_PER_EMBED);
+      listStreamersState.set(interaction.user.id, { users, currentPage: 0 });
 
-      // Split users into pages
-      const pages: TrackedUser[][] = [];
-      for (let i = 0; i < users.length; i += MAX_ROWS_PER_EMBED) {
-        pages.push(users.slice(i, i + MAX_ROWS_PER_EMBED));
-      }
-
-      for (let p = 0; p < pages.length; p++) {
-        const pageUsers = pages[p];
-        const embed = new EmbedBuilder().setColor(EMBED_COLOR).setTitle('Tracked Streamers');
-
-        // Add header row as a description line
-        let description = '**Discord Username** | **Twitch Username** | **Date Added** | **Added By**\n';
-
-        for (const user of pageUsers) {
-          const addedDate = user.added_at ? new Date(user.added_at).toLocaleString() : 'Unknown';
-          const discordUser = `<@${user.discord_id}>`;
-          const addedBy = `<@${user.added_by}>`;
-          description += `${discordUser} | \`${user.twitch_username}\` | ${addedDate} | ${addedBy}\n`;
-        }
-
-        embed.setDescription(description);
-
-        if (pages.length > 1) {
-          embed.setFooter({ text: `Page ${p + 1} of ${pages.length}` });
-        }
-
-        const sendMethod = p === 0 ? interaction.reply.bind(interaction) : interaction.followUp.bind(interaction);
-        await sendMethod({ embeds: [embed], flags: MessageFlags.Ephemeral });
-      }
+      await showPage(interaction, 0, MAX_ROWS_PER_EMBED, EMBED_COLOR, totalPages);
     } catch (error) {
       botLogger.error({ err: error }, 'Error listing streamers');
       await interaction.reply({ content: 'An error occurred while listing streamers.', flags: MessageFlags.Ephemeral });
