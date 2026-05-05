@@ -112,6 +112,7 @@ async function fetchWithRetry<T>(
       
       // Auth failure: do not retry, clear token and fail immediately
       if (response.status === 401) {
+        logger.warn({ operation, status: response.status }, 'Twitch API authentication failed');
         clearTwitchToken();
         throw new TwitchApiError('Twitch authentication failed', response.status);
       }
@@ -129,7 +130,8 @@ async function fetchWithRetry<T>(
         continue;
       }
       
-      // Non-retryable error: throw immediately
+      // Non-retryable error: log and throw immediately
+      logger.warn({ operation, status: response.status, statusText: response.statusText }, 'Twitch API error');
       throw new TwitchApiError(
         `Twitch API error for ${operation}: ${response.statusText} (${response.status})`,
         response.status,
