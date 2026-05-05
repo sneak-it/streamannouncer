@@ -4,6 +4,7 @@ import type { ChatInputCommandInteraction, GuildMember, TextChannel } from 'disc
 import fs from 'node:fs';
 
 import db from './db.js';
+import { logger } from './logger.js';
 import { clearTwitchToken, getStreamsByIds, getUsers, getUsersByIds, TwitchApiError } from './twitch.js';
 
 import { Client, EmbedBuilder, Events, GatewayIntentBits, MessageFlags, PermissionsBitField, REST, Routes, SlashCommandBuilder } from 'discord.js';
@@ -59,7 +60,7 @@ async function getUserProfile(userId: string): Promise<TwitchUser | undefined> {
       return users[0];
     }
   } catch (error) {
-    console.error(`Failed to get user profile for ${userId}:`, error);
+    logger.error({ err: error, user_id: userId }, 'Failed to get user profile');
   }
 }
 
@@ -210,15 +211,17 @@ const commands = [
         .setRequired(true)),
 ].map(command => command.toJSON());
 
+const botLogger = logger.child({ name: 'bot' });
+
 client.once(Events.ClientReady, async () => {
-  console.log(`Logged in as ${client.user?.tag}!`);
+  botLogger.info({ username: client.user?.tag }, 'Bot logged in');
   isReady = true;
   
   // Create health file for Docker healthcheck
   try {
     fs.writeFileSync(HEALTH_FILE, 'ok');
   } catch (error) {
-    console.error('Failed to create health file:', error);
+    botLogger.error({ err: error }, 'Failed to create health file');
   }
 
   // Register commands
@@ -227,14 +230,14 @@ client.once(Events.ClientReady, async () => {
   if (token && clientId) {
     const rest = new REST({ version: '10' }).setToken(token);
     try {
-      console.log('Started refreshing application (/) commands.');
+      botLogger.info({ commandCount: commands.length }, 'Started refreshing application (/) commands');
       await rest.put(
         Routes.applicationCommands(clientId),
         { body: commands },
       );
-      console.log('Successfully reloaded application (/) commands.');
+      botLogger.info('Application (/) commands reloaded');
     } catch (error) {
-      console.error(error);
+      botLogger.error({ err: error }, 'Failed to reload application commands');
     }
   }
 });
@@ -263,7 +266,7 @@ async function checkAdminPermission(interaction: ChatInputCommandInteraction): P
            const fetchedMember = await interaction.guild.members.fetch(interaction.user.id);
            hasPermission = fetchedMember.roles.cache.has(adminRoleId);
          } catch (error) {
-           console.error('Failed to fetch member:', error);
+           botLogger.error({ err: error }, 'Failed to fetch member');
          }
       }
     }
@@ -320,7 +323,7 @@ client.on('interactionCreate', async interaction => {
 
       await interaction.reply({ content: `Successfully linked Twitch account **${twitchUser.login}** to ${targetUser}!`, flags: MessageFlags.Ephemeral });
     } catch (error) {
-      console.error('Error linking Twitch account:', error);
+      botLogger.error({ err: error, username }, 'Error linking Twitch account');
       await interaction.reply({ content: 'An error occurred while verifying the Twitch account.', flags: MessageFlags.Ephemeral });
     }
   
@@ -347,7 +350,7 @@ client.on('interactionCreate', async interaction => {
 
       await (result && result.changes > 0 ? interaction.reply({ content: `Successfully removed the streamer.`, flags: MessageFlags.Ephemeral }) : interaction.reply({ content: `Could not find a tracked streamer matching that criteria.`, flags: MessageFlags.Ephemeral }));
     } catch (error) {
-      console.error('Error removing streamer:', error);
+      botLogger.error({ err: error }, 'Error removing streamer');
       await interaction.reply({ content: 'An error occurred while removing the streamer.', flags: MessageFlags.Ephemeral });
     }
   
@@ -398,7 +401,7 @@ client.on('interactionCreate', async interaction => {
         await sendMethod({ embeds: [embed], flags: MessageFlags.Ephemeral });
       }
     } catch (error) {
-      console.error('Error listing streamers:', error);
+      botLogger.error({ err: error }, 'Error listing streamers');
       await interaction.reply({ content: 'An error occurred while listing streamers.', flags: MessageFlags.Ephemeral });
     }
 
@@ -459,7 +462,7 @@ client.on('interactionCreate', async interaction => {
       await channel.send({ content: announcementText, embeds: [embed] });
       await interaction.editReply({ content: `Test embed sent to <#${channelId}>!` });
     } catch (error) {
-      console.error('Error sending test embed:', error);
+      botLogger.error({ err: error }, 'Error sending test embed');
       await interaction.editReply({ content: 'An error occurred while sending the test embed.' });
     }
   
@@ -472,13 +475,14 @@ client.on('interactionCreate', async interaction => {
 export async function startBot() {
   const token = process.env.DISCORD_TOKEN;
   if (!token) {
-    console.error('DISCORD_TOKEN environment variable is required');
+    logger.error('DISCORD_TOKEN environment variable is required');
     return;
   }
   try {
     await client.login(token);
+    logger.info({ username: client.user?.tag }, 'Bot logged in');
   } catch (error) {
-    console.error('Failed to login to Discord:', error);
+    logger.error({ err: error }, 'Failed to login to Discord');
     throw error;
   }
 }
@@ -491,7 +495,7 @@ export async function stopBot() {
       fs.unlinkSync(HEALTH_FILE);
     }
   } catch (error) {
-    console.error('Failed to remove health file:', error);
+    logger.error({ err: error }, 'Failed to remove health file');
   }
 }
 
@@ -504,7 +508,7 @@ async function runPoll() {
     try {
       await executePoll();
     } catch (error) {
-      console.error('Error in polling loop:', error);
+      logger.error({ err: error }, 'Error in polling loop');
     }
   });
   return pollLock;
@@ -516,6 +520,7 @@ async function runPoll() {
 async function executePoll() {
   if (!isReady || isPolling) return;
   
+  botLogger.debug('Poll cycle started');
   isPolling = true;
   try {
     const roleId = process.env.DISCORD_ROLE_ID;
@@ -524,18 +529,19 @@ async function executePoll() {
     const announcementMsg = process.env.DISCORD_ANNOUNCEMENT_MESSAGE || 'Hey @everyone, {user} is now live on Twitch! {url}';
 
     if (!guildId || !channelId) {
-      console.warn('Missing required Discord configuration (GUILD_ID or CHANNEL_ID) in environment variables.');
+      logger.warn('Missing required Discord configuration (GUILD_ID or CHANNEL_ID) in environment variables');
       return;
     }
 
     const guild = client.guilds.cache.get(guildId);
     if (!guild) {
-      console.warn(`Guild with ID ${guildId} not found.`);
+      logger.warn({ guild_id: guildId }, 'Guild not found');
       return;
     }
 
     // 1. Fetch tracked users from database
     const trackedUsers = db.prepare("SELECT * FROM tracked_users").all() as TrackedUser[];
+    botLogger.debug({ tracked_count: trackedUsers.length }, 'Fetched tracked users');
     if (trackedUsers.length === 0) return;
 
     // 2. Filter tracked users by those who currently have the role (if roleId is provided)
@@ -555,7 +561,7 @@ async function executePoll() {
           }
         }
       } catch (error) {
-        console.error('Error fetching members to check roles:', error);
+        logger.error({ err: error }, 'Error fetching members to check roles');
         return; // Skip this cycle if we can't verify roles
       }
     } else {
@@ -564,7 +570,7 @@ async function executePoll() {
 
     // Clean up orphaned users
     if (orphanedUsers.length > 0) {
-      console.log(`Cleaning up ${orphanedUsers.length} orphaned tracked users`);
+      logger.info({ count: orphanedUsers.length }, 'Cleaning up orphaned tracked users');
       for (const discordId of orphanedUsers) {
         db.prepare('DELETE FROM tracked_users WHERE discord_id = ?').run(discordId);
       }
@@ -589,17 +595,19 @@ async function executePoll() {
         liveStreams.push(...streams);
       } catch (error) {
         if (error instanceof TwitchApiError) {
-          console.error('Twitch API error:', error.message);
+          logger.error({ error: error.message, status_code: error.statusCode }, 'Twitch API error');
           if (error.statusCode === 401) {
             // Token expired, clear it and retry
             clearTwitchToken();
             continue;
           }
         }
-        console.error('Failed to get streams:', error);
+        logger.error({ err: error }, 'Failed to get streams');
         for (const id of chunk) failedTwitchIds.add(id);
       }
     }
+
+    botLogger.debug({ live_count: liveStreams.length, failed_count: failedTwitchIds.size, twitch_ids_count: twitchIds.length }, 'Fetched live streams');
 
     const liveUserIds = new Set(liveStreams.map(s => s.user_id));
     const activeStreams = db.prepare("SELECT * FROM active_streams").all() as ActiveStream[];
@@ -612,12 +620,13 @@ async function executePoll() {
           if (channel) {
             const message = await channel.messages.fetch(active.message_id);
             if (message) await message.delete();
+            logger.info({ twitch_id: active.twitch_id, message_id: active.message_id }, 'Stream went offline, deleted announcement');
           }
         } catch (error) {
           if (typeof error === 'object' && error !== null && 'code' in error && (error as { code?: number }).code === 10_008) { // Discord error code for unknown message
-            console.log(`Message ${active.message_id} already deleted, removing from DB`);
+            logger.debug({ message_id: active.message_id }, 'Message already deleted, removing from DB');
           } else {
-            console.error(`Failed to delete message for Twitch ID ${active.twitch_id}:`, error);
+            logger.error({ err: error, twitch_id: active.twitch_id }, 'Failed to delete message');
           }
           db.prepare("DELETE FROM active_streams WHERE twitch_id = ?").run(active.twitch_id);
         }
@@ -664,9 +673,10 @@ async function executePoll() {
           const message = await channel.messages.fetch(active.message_id);
           if (message) {
             await message.edit({ embeds: [embed] });
+            botLogger.info({ twitch_id: twitchId, twitch_username: username, message_id: active.message_id }, 'Stream announcement updated');
           }
         } catch (error) {
-          console.error(`Failed to update message for ${username}:`, error);
+          botLogger.error({ err: error, twitch_username: username }, 'Failed to update message');
           // If message deleted, remove from active_streams so it posts again next time
           db.prepare("DELETE FROM active_streams WHERE twitch_id = ?").run(twitchId);
         }
@@ -678,13 +688,14 @@ async function executePoll() {
             INSERT INTO active_streams (twitch_id, discord_id, message_id, channel_id, start_time)
             VALUES (?, ?, ?, ?, ?)
           `).run(twitchId, trackedUser?.discord_id, message.id, channel.id, Date.now());
+          botLogger.info({ twitch_id: twitchId, twitch_username: username, user_name: stream.user_name, game_name: stream.game_name, viewer_count: stream.viewer_count, message_id: message.id, channel_id: channel.id }, 'Stream is live, announcement posted');
         } catch (error) {
-          console.error(`Failed to send message for ${username}:`, error);
+          botLogger.error({ err: error, twitch_username: username }, 'Failed to send message');
         }
       }
     }
   } catch (error) {
-    console.error('Error in polling loop:', error);
+    logger.error({ err: error }, 'Error in polling loop');
   } finally {
     isPolling = false;
   }

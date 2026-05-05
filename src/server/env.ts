@@ -1,7 +1,4 @@
-/**
- * Environment variable validation for production readiness.
- * Ensures all required configuration is present before the bot starts.
- */
+import { logger } from './logger.js';
 
 interface EnvVarInfo {
   name: string;
@@ -46,28 +43,16 @@ export function validateEnv(): void {
 
   // Report errors for missing required variables
   if (missingRequired.length > 0) {
-    const errorMessages = missingRequired.map(name => {
-      const info = ENV_VARS.find(v => v.name === name);
-      return `  - ${name}${info ? ` (${info.description})` : ''}`;
-    });
-
-    console.error('ERROR: Missing required environment variables:');
-    console.error(errorMessages.join('\n'));
-    console.error('\nPlease set these variables in your .env file or environment.');
-    console.error('Copy .env.example to .env and fill in your credentials.');
-    console.error('\nFor more information, see the README.md documentation.');
-
+    logger.error({ missing: missingRequired }, 'Missing required environment variables');
     throw new Error(`Missing ${missingRequired.length} required environment variable(s)`);
   }
 
   // Log warnings for optional variables
   if (warnings.length > 0) {
-    console.warn('WARNING: Optional environment variables not set:');
-    console.warn(warnings.join('\n'));
-    console.warn('The bot will use default behavior for these settings.\n');
+    logger.warn({ warnings }, 'Optional environment variables not set');
   }
 
-  console.log('Environment validation passed. All required variables are set.');
+  logger.info('Environment validation passed. All required variables are set.');
 }
 
 /**

@@ -1,3 +1,5 @@
+import { logger } from './logger.js';
+
 export interface TwitchStream {
   id: string;
   user_id: string;
@@ -75,7 +77,7 @@ function handleRateLimitHeader(response: Response): boolean {
     const resetTime = Number.parseInt(resetHeader, 10);
     const waitTime = (resetTime * 1000) - Date.now() + 1000;
     if (waitTime > 0) {
-      console.warn(`Twitch API rate limited. Waiting ${waitTime}ms until reset...`);
+      logger.warn({ wait_time_ms: waitTime }, 'Twitch API rate limited, waiting for reset');
       return true;
     }
   }
@@ -89,6 +91,7 @@ function handleRateLimitHeader(response: Response): boolean {
  */
 async function fetchWithRetry<T>(
   operation: string,
+  url: string,
   fetchFn: () => Promise<Response>,
   parseFn: (data: unknown) => T
 ): Promise<T> {
@@ -96,9 +99,13 @@ async function fetchWithRetry<T>(
   
   for (let attempt = 0; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
     try {
+      if (attempt === 0) {
+        logger.debug({ operation, url }, 'Twitch API request sent');
+      }
       const response = await fetchFn();
       
       if (response.ok) {
+        logger.debug({ operation, status: response.status, url }, 'Twitch API response received');
         const data = await response.json() as T;
         return parseFn(data);
       }
@@ -117,7 +124,7 @@ async function fetchWithRetry<T>(
         }
         // No reset header: use exponential backoff
         const backoffTime = INITIAL_BACKOFF_MS * Math.pow(2, attempt);
-        console.warn(`Twitch API rate limited for ${operation}. Retrying in ${backoffTime}ms (attempt ${attempt + 1}/${MAX_RETRY_ATTEMPTS})...`);
+        logger.warn({ operation, backoff_ms: backoffTime, attempt: attempt + 1, max_attempts: MAX_RETRY_ATTEMPTS }, 'Twitch API rate limited, retrying');
         await new Promise(resolve => setTimeout(resolve, backoffTime));
         continue;
       }
@@ -137,7 +144,7 @@ async function fetchWithRetry<T>(
       lastNonRateLimitError = error instanceof Error ? error : new Error(String(error));
       if (attempt < MAX_RETRY_ATTEMPTS) {
         const backoffTime = INITIAL_BACKOFF_MS * Math.pow(2, attempt);
-        console.warn(`Error during ${operation}: ${lastNonRateLimitError.message}. Retrying in ${backoffTime}ms...`);
+        logger.warn({ operation, error: lastNonRateLimitError.message, backoff_ms: backoffTime }, 'Error during API call, retrying');
         await new Promise(resolve => setTimeout(resolve, backoffTime));
       }
     }
@@ -214,6 +221,7 @@ export async function getStreams(usernames: string[]) {
   
   return fetchWithRetry<TwitchStream[]>(
     'getStreams',
+    url,
     () => fetch(url, {
       headers: {
         'Client-ID': clientId!,
@@ -236,6 +244,7 @@ export async function getUsers(usernames: string[]) {
   
   return fetchWithRetry<TwitchUser[]>(
     'getUsers',
+    url,
     () => fetch(url, {
       headers: {
         'Client-ID': clientId!,
@@ -258,6 +267,7 @@ export async function getStreamsByIds(userIds: string[]) {
   
   return fetchWithRetry<TwitchStream[]>(
     'getStreamsByIds',
+    url,
     () => fetch(url, {
       headers: {
         'Client-ID': clientId!,
@@ -280,6 +290,7 @@ export async function getUsersByIds(userIds: string[]) {
   
   return fetchWithRetry<TwitchUser[]>(
     'getUsersByIds',
+    url,
     () => fetch(url, {
       headers: {
         'Client-ID': clientId!,
