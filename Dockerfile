@@ -35,3 +35,7 @@ ENV TZ=America/New_York
 
 # Run the bot
 CMD ["node", "dist/server.js"]
+
+# Health check: verify the bot has connected to Discord
+HEALTHCHECK --interval=60s --timeout=5s --start-period=30s --retries=3 \
+  CMD test -f /tmp/healthy || exit 1

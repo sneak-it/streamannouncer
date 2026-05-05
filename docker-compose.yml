@@ -19,8 +19,8 @@ services:
       # Mount the local data directory to persist the SQLite database
       - ./data:/app/data
     healthcheck:
-      test: ["CMD", "ls", "/tmp/healthy"]
-      interval: 30s
-      timeout: 10s
+      test: ["CMD-SHELL", "test -f /tmp/healthy || exit 1"]
+      interval: 60s
+      timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 30s
