@@ -1,6 +1,6 @@
 services:
   streamannouncer:
-    image: ghcr.io/sneak-it/streamannouncer:dev
+    image: ghcr.io/sneak-it/streamannouncer:latest
     container_name: streamannouncerbot
     restart: unless-stopped
     # Run as unprivileged node user (uid 1000)
