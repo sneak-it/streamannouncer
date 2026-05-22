@@ -83,11 +83,6 @@ In the **Bot** tab of the Discord Developer Portal, you must toggle the followin
 - `/list-streamers`: Lists all tracked streamers, including who added them and when. (Requires Admin Role)
 - `/test-embed <username>`: Sends a test live notification to the configured channel for a specific Twitch user. (Requires Admin Role)
 
-## Development
+## Database Backups
 
-To run the bot locally without Docker:
-
-```bash
-npm install
-npm run dev
-```
+The bot automatically creates timestamped backups of the SQLite database (stored in `./data/bot.db`) every 60 minutes by default. Backups are named `bot-backup-<timestamp>.db` and only the 5 most recent are retained. To restore from a backup, stop the bot, replace `./data/bot.db` with the desired backup file (ensure any `.db-wal` and `.db-shm` files are also removed), and restart the bot.

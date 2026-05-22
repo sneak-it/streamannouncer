@@ -19,6 +19,9 @@ const ENV_VARS: EnvVarInfo[] = [
   { name: 'DISCORD_ADMIN_ROLE_ID', required: false, description: 'Discord admin role ID for command access (optional)' },
   { name: 'DISCORD_ANNOUNCEMENT_MESSAGE', required: false, description: 'Custom announcement message template (optional, uses default if not set)' },
   { name: 'TZ', required: false, description: 'Timezone for the container (optional, defaults to America/New_York)' },
+  { name: 'BACKUP_ENABLED', required: false, description: 'Enable periodic database backups (optional, defaults to true)' },
+  { name: 'BACKUP_INTERVAL_MINUTES', required: false, description: 'Interval between periodic backups in minutes (optional, defaults to 60)' },
+  { name: 'BACKUP_MAX_KEEP', required: false, description: 'Maximum number of backups to keep (optional, defaults to 5)' },
 ];
 
 /**

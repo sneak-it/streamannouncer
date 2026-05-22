@@ -3,7 +3,7 @@ import type { ButtonInteraction, ChatInputCommandInteraction, TextChannel } from
 
 import fs from 'node:fs';
 
-import db from './db.js';
+import db, { createTimestampedBackup } from './db.js';
 import { logger } from './logger.js';
 import { clearTwitchToken, getStreamsByIds, getUsers, getUsersByIds, TwitchApiError } from './twitch.js';
 
@@ -41,6 +41,9 @@ let pollLock = Promise.resolve();
 
 // Polling timer reference for cleanup on shutdown
 let pollIntervalId: ReturnType<typeof setInterval> | undefined;
+
+// Periodic backup timer reference for cleanup on shutdown
+let backupIntervalId: ReturnType<typeof setInterval> | undefined;
 
 // User profile cache with LRU eviction
 interface UserProfileCacheEntry {
@@ -281,6 +284,28 @@ client.once(Events.ClientReady, async () => {
 
   // Run initial poll after bot is ready
   await runPoll();
+
+  // Start periodic database backups (every 60 minutes by default)
+  const backupEnabled = process.env.BACKUP_ENABLED !== 'false';
+  const backupIntervalMinutes = Number.parseInt(process.env.BACKUP_INTERVAL_MINUTES ?? '60', 10);
+  const backupMaxKeep = Number.parseInt(process.env.BACKUP_MAX_KEEP ?? '5', 10);
+  if (backupEnabled && !Number.isNaN(backupIntervalMinutes) && backupIntervalMinutes > 0) {
+    // Run initial backup immediately, then periodically
+    try {
+      const success = createTimestampedBackup(backupMaxKeep);
+      botLogger.info({ enabled: backupEnabled, interval_minutes: backupIntervalMinutes, max_keep: backupMaxKeep, success }, 'Database backup completed');
+    } catch (error) {
+      botLogger.error({ err: error }, 'Failed to create initial database backup');
+    }
+    backupIntervalId = setInterval(async () => {
+      try {
+        const success = createTimestampedBackup(backupMaxKeep);
+        botLogger.info({ success }, 'Periodic database backup completed');
+      } catch (error) {
+        botLogger.error({ err: error }, 'Failed to create periodic database backup');
+      }
+    }, backupIntervalMinutes * 60 * 1000);
+  }
 });
 
 async function checkAdminPermission(interaction: ChatInputCommandInteraction): Promise<boolean> {
@@ -601,6 +626,25 @@ export async function stopBot() {
     clearInterval(pollIntervalId);
     pollIntervalId = undefined;
   }
+  
+  // Clear backup interval to prevent further execution
+  if (backupIntervalId !== undefined) {
+    clearInterval(backupIntervalId);
+    backupIntervalId = undefined;
+  }
+  
+  // Create a final backup before shutdown
+  const backupEnabled = process.env.BACKUP_ENABLED !== 'false';
+  const backupMaxKeep = Number.parseInt(process.env.BACKUP_MAX_KEEP ?? '5', 10);
+  if (backupEnabled && !Number.isNaN(backupMaxKeep)) {
+    try {
+      const success = createTimestampedBackup(backupMaxKeep);
+      botLogger.info({ success }, 'Final shutdown database backup completed');
+    } catch (error) {
+      botLogger.error({ err: error }, 'Failed to create final shutdown database backup');
+    }
+  }
+  
   client.destroy();
   isReady = false;
   try {
