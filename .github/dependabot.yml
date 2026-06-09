@@ -21,11 +21,14 @@ updates:
     open-pull-requests-limit: 10
     cooldown:
       default-days: 7
+    groups:
+      docker-dependencies:
+        patterns:
+          - "*"
     commit-message:
       prefix: "chore(docker)"
     labels:
       - "dependencies"
-
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -34,6 +37,10 @@ updates:
     open-pull-requests-limit: 10
     cooldown:
       default-days: 7
+    groups:
+      github-actions-dependencies:
+        patterns:
+          - "*"
     commit-message:
       prefix: "chore(actions)"
     labels:
