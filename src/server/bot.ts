@@ -310,14 +310,14 @@ const handleClientReady = async (): Promise<void> => {
   if (isBackupEnabled && !Number.isNaN(backupIntervalMinutes) && backupIntervalMinutes > 0) {
     // Run initial backup immediately, then periodically
     try {
-      createTimestampedBackup(backupMaxKeep);
+      await createTimestampedBackup(backupMaxKeep);
       botLogger.info({ enabled: isBackupEnabled, interval_minutes: backupIntervalMinutes, max_keep: backupMaxKeep }, 'Database backup completed');
     } catch (error) {
       botLogger.error({ err: error }, 'Failed to create initial database backup');
     }
     botState.backupIntervalId = setInterval(async () => {
       try {
-        createTimestampedBackup(backupMaxKeep);
+        await createTimestampedBackup(backupMaxKeep);
         botLogger.info('Periodic database backup completed');
       } catch (error) {
         botLogger.error({ err: error }, 'Failed to create periodic database backup');
@@ -666,7 +666,7 @@ export async function stopBot() {
   const backupMaxKeep = Number(process.env.BACKUP_MAX_KEEP ?? '5');
   if (isBackupEnabled && !Number.isNaN(backupMaxKeep)) {
     try {
-      createTimestampedBackup(backupMaxKeep);
+      await createTimestampedBackup(backupMaxKeep);
       botLogger.info('Final shutdown database backup completed');
     } catch (error) {
       botLogger.error({ err: error }, 'Failed to create final shutdown database backup');

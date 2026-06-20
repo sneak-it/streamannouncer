@@ -42,12 +42,13 @@ const database = openDatabase();
 /**
  * Creates a backup of the SQLite database using better-sqlite3's built-in backup method.
  * This method handles WAL mode correctly by creating a consistent snapshot without
- * needing to close the connection.
+ * needing to close the connection. The underlying `backup()` is asynchronous, so this
+ * resolves only once the backup file is fully written.
  * @param backupPath - The path where the backup file will be created.
  * @throws If the backup could not be created.
  */
-export function createBackup(backupPath: string): void {
-  database.backup(backupPath);
+export async function createBackup(backupPath: string): Promise<void> {
+  await database.backup(backupPath);
 }
 
 /**
@@ -88,10 +89,10 @@ export function cleanupOldBackups(maxKeep: number): void {
  * @param maxKeep - The maximum number of backups to retain.
  * @throws If the backup could not be created.
  */
-export function createTimestampedBackup(maxKeep: number = 5): void {
+export async function createTimestampedBackup(maxKeep: number = 5): Promise<void> {
   const timestamp = new Date().toISOString().replaceAll(/[:.]/g, '-');
   const backupPath = path.join(dataDirectory, `bot-backup-${timestamp}.db`);
-  createBackup(backupPath);
+  await createBackup(backupPath);
   cleanupOldBackups(maxKeep);
 }
 
