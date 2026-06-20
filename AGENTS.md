@@ -12,7 +12,7 @@ This project is a Discord bot that announces Twitch streams.
 ## Architecture & Patterns
 
 - **Environment Variables**: Managed via system env or `.env` file. Do NOT use `dotenv` package; use Node's native `--env-file` support.
-- **Imports**: Must use explicit `.js` extensions for local module imports (e.g., `import db from './db.js'`).
+- **Imports**: Must use explicit `.js` extensions for local module imports (e.g., `import db from './database.js'`).
 - **Health Checks**: File-based heartbeat at `/tmp/healthy`. Created on `ClientReady`, removed on shutdown.
 - **Polling**: Twitch streams are polled every 5 minutes.
 - **Cleanup**: Announcement messages are automatically deleted when streams go offline.

@@ -69,12 +69,12 @@ const INITIAL_BACKOFF_MS = 1000;
  * Parses the Ratelimit-Reset header and waits if present.
  * Returns true if a wait was performed, false otherwise.
  */
-function handleRateLimitHeader(response: Response): boolean {
+function shouldWaitForRateLimit(response: Response): boolean {
   if (response.status !== 429) return false;
-  
+
   const resetHeader = response.headers.get(RATE_LIMIT_RESET_HEADER);
   if (resetHeader) {
-    const resetTime = Number.parseInt(resetHeader, 10);
+    const resetTime = Number(resetHeader);
     const waitTime = (resetTime * 1000) - Date.now() + 1000;
     if (waitTime > 0) {
       logger.warn({ wait_time_ms: waitTime }, 'Twitch API rate limited, waiting for reset');
@@ -92,8 +92,8 @@ function handleRateLimitHeader(response: Response): boolean {
 async function fetchWithRetry<T>(
   operation: string,
   url: string,
-  fetchFn: () => Promise<Response>,
-  parseFn: (data: unknown) => T
+  fetchFunction: () => Promise<Response>,
+  parseFunction: (data: unknown) => T
 ): Promise<T> {
   let lastNonRateLimitError: Error | undefined;
   
@@ -102,12 +102,12 @@ async function fetchWithRetry<T>(
       if (attempt === 0) {
         logger.debug({ operation, url }, 'Twitch API request sent');
       }
-      const response = await fetchFn();
+      const response = await fetchFunction();
       
       if (response.ok) {
         logger.debug({ operation, status: response.status, url }, 'Twitch API response received');
         const data = await response.json() as T;
-        return parseFn(data);
+        return parseFunction(data);
       }
       
       // Auth failure: do not retry, clear token and fail immediately
@@ -119,7 +119,7 @@ async function fetchWithRetry<T>(
       
       // Rate limit (429): wait and retry
       if (response.status === 429 && attempt < MAX_RETRY_ATTEMPTS) {
-        if (handleRateLimitHeader(response)) {
+        if (shouldWaitForRateLimit(response)) {
           // Already waited for reset header, retry once
           continue;
         }
@@ -156,27 +156,33 @@ async function fetchWithRetry<T>(
 }
 
 // Token management with race condition protection
-let accessToken = '';
-let tokenExpiresAt = 0;
-let tokenRefreshPromise: Promise<string> | undefined;
+const tokenState: {
+  accessToken: string;
+  expiresAt: number;
+  refreshPromise: Promise<string> | undefined;
+} = {
+  accessToken: '',
+  expiresAt: 0,
+  refreshPromise: undefined,
+};
 
 export function clearTwitchToken() {
-  accessToken = '';
-  tokenExpiresAt = 0;
-  tokenRefreshPromise = undefined;
+  tokenState.accessToken = '';
+  tokenState.expiresAt = 0;
+  tokenState.refreshPromise = undefined;
 }
 
 export async function getTwitchToken() {
   // Prevent concurrent token refreshes
-  if (tokenRefreshPromise) {
-    return tokenRefreshPromise;
+  if (tokenState.refreshPromise) {
+    return tokenState.refreshPromise;
   }
-  
-  if (accessToken && Date.now() < tokenExpiresAt) {
-    return accessToken;
+
+  if (tokenState.accessToken && Date.now() < tokenState.expiresAt) {
+    return tokenState.accessToken;
   }
-  
-  tokenRefreshPromise = (async () => {
+
+  tokenState.refreshPromise = (async () => {
     try {
       const clientId = process.env.TWITCH_CLIENT_ID;
       const clientSecret = process.env.TWITCH_CLIENT_SECRET;
@@ -191,7 +197,7 @@ export async function getTwitchToken() {
       url.searchParams.set('client_secret', clientSecret);
       url.searchParams.set('grant_type', 'client_credentials');
       
-      const response = await fetch(url.toString(), {
+      const response = await fetch(url.href, {
         method: 'POST'
       });
 
@@ -200,15 +206,15 @@ export async function getTwitchToken() {
       }
 
       const data = await response.json() as TwitchTokenResponse;
-      accessToken = data.access_token;
-      tokenExpiresAt = Date.now() + (data.expires_in - 300) * 1000;
-      return accessToken;
+      tokenState.accessToken = data.access_token;
+      tokenState.expiresAt = Date.now() + (data.expires_in - 300) * 1000;
+      return tokenState.accessToken;
     } finally {
-      tokenRefreshPromise = undefined;
+      tokenState.refreshPromise = undefined;
     }
   })();
-  
-  return tokenRefreshPromise;
+
+  return tokenState.refreshPromise;
 }
 
 export async function getStreams(usernames: string[]) {
@@ -216,10 +222,10 @@ export async function getStreams(usernames: string[]) {
   
   const token = await getTwitchToken();
   const clientId = process.env.TWITCH_CLIENT_ID;
-  const params = new URLSearchParams();
-  for (const u of usernames) params.append('user_login', u);
+  const parameters = new URLSearchParams();
+  for (const u of usernames) parameters.append('user_login', u);
   
-  const url = `https://api.twitch.tv/helix/streams?${params.toString()}`;
+  const url = `https://api.twitch.tv/helix/streams?${parameters.toString()}`;
   
   return fetchWithRetry<TwitchStream[]>(
     'getStreams',
@@ -239,10 +245,10 @@ export async function getUsers(usernames: string[]) {
   
   const token = await getTwitchToken();
   const clientId = process.env.TWITCH_CLIENT_ID;
-  const params = new URLSearchParams();
-  for (const u of usernames) params.append('login', u);
+  const parameters = new URLSearchParams();
+  for (const u of usernames) parameters.append('login', u);
   
-  const url = `https://api.twitch.tv/helix/users?${params.toString()}`;
+  const url = `https://api.twitch.tv/helix/users?${parameters.toString()}`;
   
   return fetchWithRetry<TwitchUser[]>(
     'getUsers',
@@ -262,10 +268,10 @@ export async function getStreamsByIds(userIds: string[]) {
   
   const token = await getTwitchToken();
   const clientId = process.env.TWITCH_CLIENT_ID;
-  const params = new URLSearchParams();
-  for (const id of userIds) params.append('user_id', id);
+  const parameters = new URLSearchParams();
+  for (const id of userIds) parameters.append('user_id', id);
   
-  const url = `https://api.twitch.tv/helix/streams?${params.toString()}`;
+  const url = `https://api.twitch.tv/helix/streams?${parameters.toString()}`;
   
   return fetchWithRetry<TwitchStream[]>(
     'getStreamsByIds',
@@ -285,10 +291,10 @@ export async function getUsersByIds(userIds: string[]) {
   
   const token = await getTwitchToken();
   const clientId = process.env.TWITCH_CLIENT_ID;
-  const params = new URLSearchParams();
-  for (const id of userIds) params.append('id', id);
+  const parameters = new URLSearchParams();
+  for (const id of userIds) parameters.append('id', id);
   
-  const url = `https://api.twitch.tv/helix/users?${params.toString()}`;
+  const url = `https://api.twitch.tv/helix/users?${parameters.toString()}`;
   
   return fetchWithRetry<TwitchUser[]>(
     'getUsersByIds',

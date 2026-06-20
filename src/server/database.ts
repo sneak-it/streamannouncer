@@ -1,0 +1,102 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
+import Database from 'better-sqlite3';
+
+const dataDirectory = path.join(process.cwd(), 'data');
+
+/**
+ * Opens the SQLite database, ensuring the data directory and schema exist.
+ */
+function openDatabase(): Database.Database {
+  if (!fs.existsSync(dataDirectory)) {
+    fs.mkdirSync(dataDirectory, { recursive: true });
+  }
+
+  const database = new Database(path.join(dataDirectory, 'bot.db'));
+  database.pragma('journal_mode = WAL'); // Enable Write-Ahead Logging for better concurrency and reliability
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS tracked_users (
+      discord_id TEXT PRIMARY KEY,
+      twitch_username TEXT,
+      twitch_id TEXT,
+      added_at INTEGER,
+      added_by TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS active_streams (
+      twitch_id TEXT PRIMARY KEY,
+      discord_id TEXT,
+      message_id TEXT,
+      channel_id TEXT,
+      start_time INTEGER
+    );
+  `);
+
+  return database;
+}
+
+const database = openDatabase();
+
+/**
+ * Creates a backup of the SQLite database using better-sqlite3's built-in backup method.
+ * This method handles WAL mode correctly by creating a consistent snapshot without
+ * needing to close the connection.
+ * @param backupPath - The path where the backup file will be created.
+ * @throws If the backup could not be created.
+ */
+export function createBackup(backupPath: string): void {
+  database.backup(backupPath);
+}
+
+/**
+ * Gets the path to the most recent backup file in the data directory.
+ * Returns null if no backups exist.
+ */
+export function getLatestBackupPath(): string | undefined {
+  const backupFiles = fs.readdirSync(dataDirectory).filter(f => f.startsWith('bot-backup-') && f.endsWith('.db'));
+  if (backupFiles.length === 0) return undefined;
+  // Sort by name (which includes timestamp) to get the most recent
+  const sorted = backupFiles.toSorted((a, b) => a.localeCompare(b)).toReversed();
+  return path.join(dataDirectory, sorted[0]);
+}
+
+/**
+ * Cleans up old backups, keeping only the most recent N backups.
+ * @param maxKeep - The maximum number of backups to retain.
+ */
+export function cleanupOldBackups(maxKeep: number): void {
+  const backupFiles = fs.readdirSync(dataDirectory).filter(f => f.startsWith('bot-backup-') && f.endsWith('.db'));
+  if (backupFiles.length <= maxKeep) return; // Nothing to clean up
+
+  // Sort by name (timestamp-based) and remove oldest first
+  const sorted = backupFiles.toSorted((a, b) => a.localeCompare(b));
+  const toDelete = sorted.slice(0, sorted.length - maxKeep);
+  for (const file of toDelete) {
+    try {
+      fs.unlinkSync(path.join(dataDirectory, file));
+      console.log(`Deleted old backup: ${file}`);
+    } catch (error) {
+      console.error({ err: error }, `Failed to delete old backup: ${file}`);
+    }
+  }
+}
+
+/**
+ * Creates a timestamped backup of the database and cleans up old backups.
+ * @param maxKeep - The maximum number of backups to retain.
+ * @throws If the backup could not be created.
+ */
+export function createTimestampedBackup(maxKeep: number = 5): void {
+  const timestamp = new Date().toISOString().replaceAll(/[:.]/g, '-');
+  const backupPath = path.join(dataDirectory, `bot-backup-${timestamp}.db`);
+  createBackup(backupPath);
+  cleanupOldBackups(maxKeep);
+}
+
+export function closeDatabase() {
+  database.close();
+}
+
+export default database;

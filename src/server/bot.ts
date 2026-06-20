@@ -1,9 +1,9 @@
 import type { TwitchStream, TwitchUser } from './twitch.js';
-import type { ButtonInteraction, ChatInputCommandInteraction, TextChannel } from 'discord.js';
+import type { ButtonInteraction, ChatInputCommandInteraction, Interaction, TextChannel } from 'discord.js';
 
 import fs from 'node:fs';
 
-import db, { createTimestampedBackup } from './db.js';
+import database, { createTimestampedBackup } from './database.js';
 import { logger } from './logger.js';
 import { clearTwitchToken, getStreamsByIds, getUsers, getUsersByIds, TwitchApiError } from './twitch.js';
 
@@ -35,15 +35,25 @@ const HEALTH_FILE = '/tmp/healthy';
 const USER_PROFILE_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
 const USER_PROFILE_CACHE_MAX_SIZE = 1000;
 
-// Polling with Promise-based locking to prevent race conditions
-let isPolling = false;
-let pollLock = Promise.resolve();
-
-// Polling timer reference for cleanup on shutdown
-let pollIntervalId: ReturnType<typeof setInterval> | undefined;
-
-// Periodic backup timer reference for cleanup on shutdown
-let backupIntervalId: ReturnType<typeof setInterval> | undefined;
+// Mutable bot state. Held in a single object so module-level bindings are never
+// reassigned from inside functions (unicorn/no-top-level-assignment-in-function).
+const botState: {
+  // Polling with Promise-based locking to prevent race conditions
+  isPolling: boolean;
+  pollLock: Promise<void>;
+  // Polling timer reference for cleanup on shutdown
+  pollIntervalId: ReturnType<typeof setInterval> | undefined;
+  // Periodic backup timer reference for cleanup on shutdown
+  backupIntervalId: ReturnType<typeof setInterval> | undefined;
+  // Whether the Discord client has reached the ready state
+  isReady: boolean;
+} = {
+  isPolling: false,
+  pollLock: Promise.resolve(),
+  pollIntervalId: undefined,
+  backupIntervalId: undefined,
+  isReady: false,
+};
 
 // User profile cache with LRU eviction
 interface UserProfileCacheEntry {
@@ -61,8 +71,8 @@ interface ListStreamersState {
 const listStreamersState = new Map<string, ListStreamersState>();
 
 // Pre-compiled database statements to reduce GC pressure
-const selectAllTrackedUsersStmt = db.prepare('SELECT * FROM tracked_users ORDER BY added_at ASC');
-const upsertTrackedUserStmt = db.prepare(`
+const selectAllTrackedUsersStatement = database.prepare('SELECT * FROM tracked_users ORDER BY added_at ASC');
+const upsertTrackedUserStatement = database.prepare(`
   INSERT INTO tracked_users (discord_id, twitch_username, twitch_id, added_at, added_by)
   VALUES (?, ?, ?, ?, ?)
   ON CONFLICT(discord_id) DO UPDATE SET
@@ -71,12 +81,12 @@ const upsertTrackedUserStmt = db.prepare(`
     added_at = excluded.added_at,
     added_by = excluded.added_by
 `);
-const deleteTrackedUserByDiscordIdStmt = db.prepare('DELETE FROM tracked_users WHERE discord_id = ?');
-const deleteTrackedUserByTwitchUsernameStmt = db.prepare('DELETE FROM tracked_users WHERE twitch_username = ?');
-const selectAllActiveStreamsStmt = db.prepare('SELECT * FROM active_streams');
-const deleteActiveStreamByTwitchIdStmt = db.prepare('DELETE FROM active_streams WHERE twitch_id = ?');
-const updateTrackedUserTwitchUsernameStmt = db.prepare('UPDATE tracked_users SET twitch_username = ? WHERE twitch_id = ?');
-const insertActiveStreamStmt = db.prepare(`
+const deleteTrackedUserByDiscordIdStatement = database.prepare('DELETE FROM tracked_users WHERE discord_id = ?');
+const deleteTrackedUserByTwitchUsernameStatement = database.prepare('DELETE FROM tracked_users WHERE twitch_username = ?');
+const selectAllActiveStreamsStatement = database.prepare('SELECT * FROM active_streams');
+const deleteActiveStreamByTwitchIdStatement = database.prepare('DELETE FROM active_streams WHERE twitch_id = ?');
+const updateTrackedUserTwitchUsernameStatement = database.prepare('UPDATE tracked_users SET twitch_username = ? WHERE twitch_id = ?');
+const insertActiveStreamStatement = database.prepare(`
   INSERT INTO active_streams (twitch_id, discord_id, message_id, channel_id, start_time)
   VALUES (?, ?, ?, ?, ?)
 `);
@@ -85,12 +95,14 @@ const insertActiveStreamStmt = db.prepare(`
  * Evicts the least recently used entry from the cache when full.
  */
 function evictLeastRecentlyUsed(): void {
-  if (userProfileCache.size > 0) {
-    // The first entry in a Map is the oldest (insertion order)
-    const firstKey = userProfileCache.keys().next().value;
-    if (firstKey !== undefined) {
-      userProfileCache.delete(firstKey);
-    }
+  if (userProfileCache.size === 0) {
+  	return;
+  }
+
+  // The first entry in a Map is the oldest (insertion order)
+  const firstKey = userProfileCache.keys().next().value;
+  if (firstKey !== undefined) {
+    userProfileCache.delete(firstKey);
   }
 }
 
@@ -192,7 +204,7 @@ function buildStreamEmbed(
   embed.addFields(
     { name: '\u{1F3AE} Game', value: stream.game_name || 'Just Chatting', inline: true },
     { name: '\u{1F441} Viewers', value: stream.viewer_count.toLocaleString(), inline: true },
-    { name: '\u23F1 Duration', value: formatStreamDuration(stream.started_at), inline: true },
+    { name: '\u{23F1} Duration', value: formatStreamDuration(stream.started_at), inline: true },
   );
 
   // Full-size image (compact preview, clickable to expand)
@@ -211,10 +223,8 @@ const client = new Client({
   ]
 });
 
-let isReady = false;
-
 export function isBotReady() {
-  return isReady;
+  return botState.isReady;
 }
 
 const commands = [
@@ -254,10 +264,10 @@ const commands = [
 
 const botLogger = logger.child({ name: 'bot' });
 
-client.once(Events.ClientReady, async () => {
+const handleClientReady = async (): Promise<void> => {
   botLogger.info({ username: client.user?.tag }, 'Bot logged in');
-  isReady = true;
-  
+  botState.isReady = true;
+
   // Create health file for Docker healthcheck
   try {
     fs.writeFileSync(HEALTH_FILE, 'ok');
@@ -286,39 +296,36 @@ client.once(Events.ClientReady, async () => {
   await runPoll();
 
   // Start periodic database backups (every 60 minutes by default)
-  const backupEnabled = process.env.BACKUP_ENABLED !== 'false';
-  const backupIntervalMinutes = Number.parseInt(process.env.BACKUP_INTERVAL_MINUTES ?? '60', 10);
-  const backupMaxKeep = Number.parseInt(process.env.BACKUP_MAX_KEEP ?? '5', 10);
-  if (backupEnabled && !Number.isNaN(backupIntervalMinutes) && backupIntervalMinutes > 0) {
+  const isBackupEnabled = process.env.BACKUP_ENABLED !== 'false';
+  const backupIntervalMinutes = Number(process.env.BACKUP_INTERVAL_MINUTES ?? '60');
+  const backupMaxKeep = Number(process.env.BACKUP_MAX_KEEP ?? '5');
+  if (isBackupEnabled && !Number.isNaN(backupIntervalMinutes) && backupIntervalMinutes > 0) {
     // Run initial backup immediately, then periodically
     try {
-      const success = createTimestampedBackup(backupMaxKeep);
-      botLogger.info({ enabled: backupEnabled, interval_minutes: backupIntervalMinutes, max_keep: backupMaxKeep, success }, 'Database backup completed');
+      createTimestampedBackup(backupMaxKeep);
+      botLogger.info({ enabled: isBackupEnabled, interval_minutes: backupIntervalMinutes, max_keep: backupMaxKeep }, 'Database backup completed');
     } catch (error) {
       botLogger.error({ err: error }, 'Failed to create initial database backup');
     }
-    backupIntervalId = setInterval(async () => {
+    botState.backupIntervalId = setInterval(async () => {
       try {
-        const success = createTimestampedBackup(backupMaxKeep);
-        botLogger.info({ success }, 'Periodic database backup completed');
+        createTimestampedBackup(backupMaxKeep);
+        botLogger.info('Periodic database backup completed');
       } catch (error) {
         botLogger.error({ err: error }, 'Failed to create periodic database backup');
       }
     }, backupIntervalMinutes * 60 * 1000);
   }
-});
+};
 
 async function checkAdminPermission(interaction: ChatInputCommandInteraction): Promise<boolean> {
-  const adminRoleId = process.env.DISCORD_ADMIN_ROLE_ID?.trim();
-  
+  const adminRoleIdValue = process.env.DISCORD_ADMIN_ROLE_ID;
+  const adminRoleId = adminRoleIdValue?.trim();
+
   if (!adminRoleId) return true;
-  
-  let hasPermission = false;
-  
-  if (interaction.memberPermissions?.has(PermissionsBitField.Flags.Administrator)) {
-    hasPermission = true;
-  }
-  
+
+  let hasPermission = interaction.memberPermissions?.has(PermissionsBitField.Flags.Administrator) ?? false;
+
   if (!hasPermission && interaction.member) {
     const member = interaction.member;
     if ('roles' in member && typeof member.roles === 'object' && 'cache' in member.roles && member.roles.cache instanceof Map && member.roles.cache.has(adminRoleId)) {
@@ -390,7 +397,7 @@ async function showPage(
   const startIndex = currentPage * maxRows;
   const embed = buildListEmbed(state.users, startIndex, maxRows, color, currentPage, totalPages);
 
-  const prevButton = new ButtonBuilder()
+  const previousButton = new ButtonBuilder()
     .setCustomId('list_prev')
     .setLabel('Previous')
     .setStyle(ButtonStyle.Secondary)
@@ -402,15 +409,15 @@ async function showPage(
     .setStyle(ButtonStyle.Secondary)
     .setDisabled(currentPage === totalPages - 1);
 
-  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(prevButton, nextButton);
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(previousButton, nextButton);
 
-  const editOpts = { embeds: [embed], components: [row] };
+  const editOptions = { embeds: [embed], components: [row] };
   await (interaction.replied || interaction.deferred
-    ? interaction.editReply(editOpts)
-    : interaction.reply({ ...editOpts, flags: MessageFlags.Ephemeral }));
+    ? interaction.editReply(editOptions)
+    : interaction.reply({ ...editOptions, flags: MessageFlags.Ephemeral }));
 }
 
-client.on('interactionCreate', async interaction => {
+const handleInteractionCreate = async (interaction: Interaction): Promise<void> => {
   // Handle button clicks for /list-streamers pagination
   if (interaction.isButton()) {
     if (interaction.customId === 'list_prev' || interaction.customId === 'list_next') {
@@ -479,7 +486,7 @@ client.on('interactionCreate', async interaction => {
       
       const twitchUser = users[0];
 
-      upsertTrackedUserStmt.run(targetUser.id, twitchUser.login, twitchUser.id, Date.now(), interaction.user.id);
+      upsertTrackedUserStatement.run(targetUser.id, twitchUser.login, twitchUser.id, Date.now(), interaction.user.id);
 
       await interaction.reply({ content: `Successfully linked Twitch account **${twitchUser.login}** to ${targetUser}!`, flags: MessageFlags.Ephemeral });
     } catch (error) {
@@ -503,9 +510,9 @@ client.on('interactionCreate', async interaction => {
     try {
       let result;
       if (targetUser) {
-        result = deleteTrackedUserByDiscordIdStmt.run(targetUser.id);
+        result = deleteTrackedUserByDiscordIdStatement.run(targetUser.id);
       } else if (username) {
-        result = deleteTrackedUserByTwitchUsernameStmt.run(username);
+        result = deleteTrackedUserByTwitchUsernameStatement.run(username);
       }
 
       await (result && result.changes > 0 ? interaction.reply({ content: `Successfully removed the streamer.`, flags: MessageFlags.Ephemeral }) : interaction.reply({ content: `Could not find a tracked streamer matching that criteria.`, flags: MessageFlags.Ephemeral }));
@@ -523,7 +530,7 @@ client.on('interactionCreate', async interaction => {
     const EMBED_COLOR = 0x91_46_FF; // Twitch purple
 
     try {
-      const users = selectAllTrackedUsersStmt.all() as TrackedUser[];
+      const users = selectAllTrackedUsersStatement.all() as TrackedUser[];
 
       if (users.length === 0) {
         await interaction.reply({ content: 'There are currently no tracked streamers.', flags: MessageFlags.Ephemeral });
@@ -570,11 +577,11 @@ client.on('interactionCreate', async interaction => {
         started_at: new Date().toISOString()
       };
 
-      const announcementMsg = process.env.DISCORD_ANNOUNCEMENT_MESSAGE || 'Hey @everyone, {user} is now live on Twitch! {url}';
-      const announcementText = announcementMsg
-        .replace('{user}', stream.user_name)
-        .replace('{mention}', `<@${interaction.user.id}>`)
-        .replace('{url}', `https://twitch.tv/${stream.user_login}`);
+      const announcementMessage = process.env.DISCORD_ANNOUNCEMENT_MESSAGE || 'Hey @everyone, {user} is now live on Twitch! {url}';
+      const announcementText = announcementMessage
+        .replace('{user}', () => stream.user_name)
+        .replace('{mention}', () => `<@${interaction.user.id}>`)
+        .replace('{url}', () => `https://twitch.tv/${stream.user_login}`);
 
       const embed = buildStreamEmbed(
         { ...stream },
@@ -604,7 +611,7 @@ client.on('interactionCreate', async interaction => {
   }
   // No default
   }
-});
+};
 
 export async function startBot() {
   const token = process.env.DISCORD_TOKEN;
@@ -612,6 +619,14 @@ export async function startBot() {
     logger.error('DISCORD_TOKEN environment variable is required');
     return;
   }
+
+  // Register event handlers before logging in
+  client.once(Events.ClientReady, handleClientReady);
+  client.on(Events.InteractionCreate, handleInteractionCreate);
+
+  // Start the polling loop - every 5 minutes
+  botState.pollIntervalId = setInterval(runPoll, 5 * 60 * 1000);
+
   try {
     await client.login(token);
   } catch (error) {
@@ -622,31 +637,31 @@ export async function startBot() {
 
 export async function stopBot() {
   // Clear polling interval to prevent further execution
-  if (pollIntervalId !== undefined) {
-    clearInterval(pollIntervalId);
-    pollIntervalId = undefined;
+  if (botState.pollIntervalId !== undefined) {
+    clearInterval(botState.pollIntervalId);
+    botState.pollIntervalId = undefined;
   }
-  
+
   // Clear backup interval to prevent further execution
-  if (backupIntervalId !== undefined) {
-    clearInterval(backupIntervalId);
-    backupIntervalId = undefined;
+  if (botState.backupIntervalId !== undefined) {
+    clearInterval(botState.backupIntervalId);
+    botState.backupIntervalId = undefined;
   }
-  
+
   // Create a final backup before shutdown
-  const backupEnabled = process.env.BACKUP_ENABLED !== 'false';
-  const backupMaxKeep = Number.parseInt(process.env.BACKUP_MAX_KEEP ?? '5', 10);
-  if (backupEnabled && !Number.isNaN(backupMaxKeep)) {
+  const isBackupEnabled = process.env.BACKUP_ENABLED !== 'false';
+  const backupMaxKeep = Number(process.env.BACKUP_MAX_KEEP ?? '5');
+  if (isBackupEnabled && !Number.isNaN(backupMaxKeep)) {
     try {
-      const success = createTimestampedBackup(backupMaxKeep);
-      botLogger.info({ success }, 'Final shutdown database backup completed');
+      createTimestampedBackup(backupMaxKeep);
+      botLogger.info('Final shutdown database backup completed');
     } catch (error) {
       botLogger.error({ err: error }, 'Failed to create final shutdown database backup');
     }
   }
-  
+
   client.destroy();
-  isReady = false;
+  botState.isReady = false;
   try {
     if (fs.existsSync(HEALTH_FILE)) {
       fs.unlinkSync(HEALTH_FILE);
@@ -661,31 +676,32 @@ export async function stopBot() {
  * Uses isPolling flag to prevent concurrent executions from setInterval.
  */
 async function runPoll() {
-  if (isPolling) return;
-  await pollLock;
-  pollLock = pollLock.then(async () => {
+  if (botState.isPolling) return;
+  // Chain onto the previous lock so poll cycles never overlap
+  const previous = botState.pollLock;
+  botState.pollLock = (async () => {
+    await previous;
     try {
       await executePoll();
     } catch (error) {
       logger.error({ err: error }, 'Error in polling loop');
     }
-  });
-  return pollLock;
+  })();
+  return botState.pollLock;
 }
 
 /**
  * Executes the actual polling logic.
  */
 async function executePoll() {
-  if (!isReady || isPolling) return;
-  
+  if (!botState.isReady || botState.isPolling) return;
+
   botLogger.debug('Poll cycle started');
-  isPolling = true;
+  botState.isPolling = true;
   try {
     const roleId = process.env.DISCORD_ROLE_ID;
     const guildId = process.env.DISCORD_GUILD_ID;
     const channelId = process.env.DISCORD_CHANNEL_ID;
-    const announcementMsg = process.env.DISCORD_ANNOUNCEMENT_MESSAGE || 'Hey @everyone, {user} is now live on Twitch! {url}';
 
     if (!guildId || !channelId) {
       logger.warn('Missing required Discord configuration (GUILD_ID or CHANNEL_ID) in environment variables');
@@ -699,7 +715,7 @@ async function executePoll() {
     }
 
     // 1. Fetch tracked users from database
-    const trackedUsers = selectAllTrackedUsersStmt.all() as TrackedUser[];
+    const trackedUsers = selectAllTrackedUsersStatement.all() as TrackedUser[];
     botLogger.debug({ tracked_count: trackedUsers.length }, 'Fetched tracked users');
     if (trackedUsers.length === 0) return;
 
@@ -731,7 +747,7 @@ async function executePoll() {
     if (orphanedUsers.length > 0) {
       logger.info({ count: orphanedUsers.length }, 'Cleaning up orphaned tracked users');
       for (const discordId of orphanedUsers) {
-        deleteTrackedUserByDiscordIdStmt.run(discordId);
+        deleteTrackedUserByDiscordIdStatement.run(discordId);
       }
     }
 
@@ -742,8 +758,8 @@ async function executePoll() {
 
     // Twitch API allows max 100 per request
     const chunks = [];
-    for (let i = 0; i < twitchIds.length; i += 100) {
-      chunks.push(twitchIds.slice(i, i + 100));
+    for (let index = 0; index < twitchIds.length; index += 100) {
+      chunks.push(twitchIds.slice(index, index + 100));
     }
 
     const liveStreams: TwitchStream[] = [];
@@ -769,7 +785,7 @@ async function executePoll() {
     botLogger.debug({ live_count: liveStreams.length, failed_count: failedTwitchIds.size, twitch_ids_count: twitchIds.length }, 'Fetched live streams');
 
     const liveUserIds = new Set(liveStreams.map(s => s.user_id));
-    const activeStreams = selectAllActiveStreamsStmt.all() as ActiveStream[];
+    const activeStreams = selectAllActiveStreamsStatement.all() as ActiveStream[];
 
     // Handle offline streams (delete message)
     for (const active of activeStreams) {
@@ -787,7 +803,7 @@ async function executePoll() {
           } else {
             logger.error({ err: error, twitch_id: active.twitch_id }, 'Failed to delete message');
           }
-          deleteActiveStreamByTwitchIdStmt.run(active.twitch_id);
+          deleteActiveStreamByTwitchIdStatement.run(active.twitch_id);
         }
       }
     }
@@ -805,26 +821,28 @@ async function executePoll() {
       }
     }
 
+    const announcementMessage = process.env.DISCORD_ANNOUNCEMENT_MESSAGE || 'Hey @everyone, {user} is now live on Twitch! {url}';
+
     for (const stream of liveStreams) {
       const twitchId = stream.user_id;
       const active = activeStreams.find(a => a.twitch_id === twitchId);
       const profile = userProfileMap.get(twitchId);
       const trackedUser = validTrackedUsers.find(u => u.twitch_id === twitchId);
-      
+
       // Update cached username if it changed
       if (trackedUser && trackedUser.twitch_username !== stream.user_login) {
-        updateTrackedUserTwitchUsernameStmt.run(stream.user_login, twitchId);
+        updateTrackedUserTwitchUsernameStatement.run(stream.user_login, twitchId);
         trackedUser.twitch_username = stream.user_login; // Update local object too
       }
 
       const username = stream.user_login;
-      
+
       const embed = buildStreamEmbed(stream, profile);
 
-      const announcementText = announcementMsg
-        .replace('{user}', stream.user_name)
-        .replace('{mention}', `<@${trackedUser?.discord_id}>`)
-        .replace('{url}', `https://twitch.tv/${username}`);
+      const announcementText = announcementMessage
+        .replace('{user}', () => stream.user_name)
+        .replace('{mention}', () => `<@${trackedUser?.discord_id}>`)
+        .replace('{url}', () => `https://twitch.tv/${username}`);
 
       if (active) {
         // Update existing message
@@ -837,13 +855,13 @@ async function executePoll() {
         } catch (error) {
           botLogger.error({ err: error, twitch_username: username }, 'Failed to update message');
           // If message deleted, remove from active_streams so it posts again next time
-          deleteActiveStreamByTwitchIdStmt.run(twitchId);
+          deleteActiveStreamByTwitchIdStatement.run(twitchId);
         }
       } else {
         // Post new message
         try {
           const message = await channel.send({ content: announcementText, embeds: [embed] });
-          insertActiveStreamStmt.run(twitchId, trackedUser?.discord_id, message.id, channel.id, Date.now());
+          insertActiveStreamStatement.run(twitchId, trackedUser?.discord_id, message.id, channel.id, Date.now());
           botLogger.info({ twitch_id: twitchId, twitch_username: username, user_name: stream.user_name, game_name: stream.game_name, viewer_count: stream.viewer_count, message_id: message.id, channel_id: channel.id }, 'Stream is live, announcement posted');
         } catch (error) {
           botLogger.error({ err: error, twitch_username: username }, 'Failed to send message');
@@ -853,9 +871,6 @@ async function executePoll() {
   } catch (error) {
     logger.error({ err: error }, 'Error in polling loop');
   } finally {
-    isPolling = false;
+    botState.isPolling = false;
   }
 }
-
-// Polling loop - every 5 minutes
-pollIntervalId = setInterval(runPoll, 5 * 60 * 1000);

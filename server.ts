@@ -1,26 +1,30 @@
 import { startBot, stopBot } from './src/server/bot.js';
-import { closeDb } from './src/server/db.js';
-import { validateEnv } from './src/server/env.js';
+import { closeDatabase } from './src/server/database.js';
+import { validateEnvironment } from './src/server/environment.js';
 import { logger } from './src/server/logger.js';
 
 logger.info('Starting StreamAnnouncer bot...');
 
 // Validate all required environment variables before starting
 try {
-  validateEnv();
+  validateEnvironment();
 } catch {
   logger.error('\nConfiguration error. Aborting startup.');
   process.exit(1);
 }
 
-startBot().catch(console.error);
+try {
+  await startBot();
+} catch (error) {
+  logger.error({ err: error }, 'Failed to start bot');
+}
 
 // Graceful shutdown handling
 const shutdown = async (signal: string) => {
   logger.info({ signal }, 'Received signal. Shutting down gracefully...');
   try {
     await stopBot();
-    closeDb();
+    closeDatabase();
     logger.info('Shutdown complete.');
     process.exit(0);
   } catch (error) {

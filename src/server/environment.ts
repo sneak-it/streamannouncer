@@ -1,6 +1,6 @@
 import { logger } from './logger.js';
 
-interface EnvVarInfo {
+interface EnvironmentVariableInfo {
   name: string;
   required: boolean;
   description: string;
@@ -9,7 +9,7 @@ interface EnvVarInfo {
 /**
  * List of all environment variables with their metadata.
  */
-const ENV_VARS: EnvVarInfo[] = [
+const ENV_VARS: EnvironmentVariableInfo[] = [
   { name: 'DISCORD_TOKEN', required: true, description: 'Discord bot token' },
   { name: 'DISCORD_GUILD_ID', required: true, description: 'Discord server (guild) ID' },
   { name: 'DISCORD_CHANNEL_ID', required: true, description: 'Discord channel ID for announcements' },
@@ -28,18 +28,18 @@ const ENV_VARS: EnvVarInfo[] = [
  * Validates that all required environment variables are set.
  * @throws {Error} If any required environment variable is missing or empty.
  */
-export function validateEnv(): void {
+export function validateEnvironment(): void {
   const missingRequired: string[] = [];
   const warnings: string[] = [];
 
-  for (const envVar of ENV_VARS) {
-    const value = process.env[envVar.name];
+  for (const environmentVariable of ENV_VARS) {
+    const value = process.env[environmentVariable.name];
 
     if (!value || value.trim() === '') {
-      if (envVar.required) {
-        missingRequired.push(envVar.name);
+      if (environmentVariable.required) {
+        missingRequired.push(environmentVariable.name);
       } else {
-        warnings.push(`${envVar.name} is not set (optional, using default behavior)`);
+        warnings.push(`${environmentVariable.name} is not set (optional, using default behavior)`);
       }
     }
   }
@@ -64,7 +64,7 @@ export function validateEnv(): void {
  * @param defaultValue - The default value to use if the variable is not set.
  * @returns The environment variable value or the default.
  */
-export function getEnvWithDefault(name: string, defaultValue: string): string {
+export function getEnvironmentWithDefault(name: string, defaultValue: string): string {
   const value = process.env[name];
   return value && value.trim() !== '' ? value.trim() : defaultValue;
 }
