@@ -108,7 +108,7 @@ export default tseslint.config(
       ],
       'unicorn/no-abusive-eslint-config': 'off',
       'unicorn/prevent-abbreviations': 'off',
-      'unicorn/no-array-for-each': 'warn',
+      //'unicorn/no-array-for-each': 'warn',
       'unicorn/no-null': 'warn',
       'unicorn/prefer-number-properties': 'warn',
 
