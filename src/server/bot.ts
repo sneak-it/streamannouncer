@@ -1,5 +1,5 @@
 import type { TwitchStream, TwitchUser } from './twitch.js';
-import type { ButtonInteraction, ChatInputCommandInteraction, Interaction, TextChannel } from 'discord.js';
+import type { ChatInputCommandInteraction, Interaction, TextChannel } from 'discord.js';
 
 import fs from 'node:fs';
 
@@ -8,7 +8,7 @@ import { logger } from './logger.js';
 import { clearTwitchToken, getStreamsByIds, getUsers, getUsersByIds, TwitchApiError } from './twitch.js';
 
 import {
-  ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, EmbedBuilder, Events,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, ComponentType, EmbedBuilder, Events,
   GatewayIntentBits, InteractionContextType, MessageFlags, PermissionsBitField,
   REST, Routes, SlashCommandBuilder
 } from 'discord.js';
@@ -62,13 +62,10 @@ interface UserProfileCacheEntry {
 }
 const userProfileCache = new Map<string, UserProfileCacheEntry>();
 
-// State for paginated /list-streamers button interactions
-interface ListStreamersState {
-  users: TrackedUser[];
-  currentPage: number;
-  userId: string;
-}
-const listStreamersState = new Map<string, ListStreamersState>();
+// Presentation constants for /list-streamers
+const LIST_ROWS_PER_PAGE = 10;
+const LIST_EMBED_COLOR = 0x91_46_FF; // Twitch purple
+const LIST_COLLECTOR_TIMEOUT_MS = 120_000;
 
 // Pre-compiled database statements to reduce GC pressure
 const selectAllTrackedUsersStatement = database.prepare('SELECT * FROM tracked_users ORDER BY added_at ASC');
@@ -364,109 +361,50 @@ async function checkAdminPermission(interaction: ChatInputCommandInteraction): P
 /**
  * Builds an embed for a single page of the /list-streamers command.
  */
-function buildListEmbed(
-  users: TrackedUser[],
-  startIndex: number,
-  maxRows: number,
-  color: number,
-  currentPage: number,
-  totalPages: number,
-): EmbedBuilder {
-  const pageUsers = users.slice(startIndex, startIndex + maxRows);
-  const embed = new EmbedBuilder().setColor(color).setTitle('Tracked Streamers');
+function buildListEmbed(users: TrackedUser[], page: number, rowsPerPage: number, color: number): EmbedBuilder {
+  const totalPages = Math.ceil(users.length / rowsPerPage);
+  const startIndex = page * rowsPerPage;
+  const pageUsers = users.slice(startIndex, startIndex + rowsPerPage);
 
-  let description = '**Discord Username** | **Twitch Username** | **Date Added** | **Added By**\n';
+  const lines = pageUsers.map((user, index) => {
+    const position = startIndex + index + 1;
+    const twitchLink = `[\`${user.twitch_username}\`](https://twitch.tv/${user.twitch_username})`;
+    const addedClause = user.added_at ? ` added <t:${Math.floor(user.added_at / 1000)}:R>` : '';
+    return `**${position}.** <@${user.discord_id}> — ${twitchLink}\n   ↳${addedClause} by <@${user.added_by}>`;
+  });
 
-  for (const user of pageUsers) {
-    const addedDate = user.added_at ? new Date(user.added_at).toLocaleString() : 'Unknown';
-    const discordUser = `<@${user.discord_id}>`;
-    const addedBy = `<@${user.added_by}>`;
-    description += `${discordUser} | \`${user.twitch_username}\` | ${addedDate} | ${addedBy}\n`;
-  }
-
-  embed.setDescription(description);
+  const embed = new EmbedBuilder()
+    .setColor(color)
+    .setTitle(`Tracked Streamers · ${users.length} total`)
+    .setDescription(lines.join('\n'));
 
   if (totalPages > 1) {
-    embed.setFooter({ text: `Page ${currentPage + 1} of ${totalPages}` });
+    embed.setFooter({ text: `Page ${page + 1} of ${totalPages}` });
   }
 
   return embed;
 }
 
 /**
- * Sends or edits the /list-streamers message for the given page.
+ * Builds the Previous/Next pagination row, disabling buttons at the page boundaries.
  */
-async function showPage(
-  interaction: ChatInputCommandInteraction | ButtonInteraction,
-  currentPage: number,
-  maxRows: number,
-  color: number,
-  totalPages: number,
-): Promise<void> {
-  const state = listStreamersState.get(interaction.user.id);
-  if (!state) return;
-
-  const startIndex = currentPage * maxRows;
-  const embed = buildListEmbed(state.users, startIndex, maxRows, color, currentPage, totalPages);
-
+function buildListRow(page: number, totalPages: number, isDisabled = false): ActionRowBuilder<ButtonBuilder> {
   const previousButton = new ButtonBuilder()
     .setCustomId('list_prev')
     .setLabel('Previous')
     .setStyle(ButtonStyle.Secondary)
-    .setDisabled(currentPage === 0);
+    .setDisabled(isDisabled || page === 0);
 
   const nextButton = new ButtonBuilder()
     .setCustomId('list_next')
     .setLabel('Next')
     .setStyle(ButtonStyle.Secondary)
-    .setDisabled(currentPage === totalPages - 1);
+    .setDisabled(isDisabled || page === totalPages - 1);
 
-  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(previousButton, nextButton);
-
-  const editOptions = { embeds: [embed], components: [row] };
-  await (interaction.replied || interaction.deferred
-    ? interaction.editReply(editOptions)
-    : interaction.reply({ ...editOptions, flags: MessageFlags.Ephemeral }));
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(previousButton, nextButton);
 }
 
 const handleInteractionCreate = async (interaction: Interaction): Promise<void> => {
-  // Handle button clicks for /list-streamers pagination
-  if (interaction.isButton()) {
-    if (interaction.customId === 'list_prev' || interaction.customId === 'list_next') {
-      const state = listStreamersState.get(interaction.user.id);
-      if (!state) return;
-
-      // Only the original user can interact with the buttons
-      if (interaction.user.id !== state.userId) {
-        await interaction.reply({ content: 'These buttons are not for you!', flags: MessageFlags.Ephemeral });
-        return;
-      }
-
-      const MAX_ROWS_PER_EMBED = 6;
-      const EMBED_COLOR = 0x91_46_FF;
-      const totalPages = Math.ceil(state.users.length / MAX_ROWS_PER_EMBED);
-
-      let newPage = state.currentPage;
-      if (interaction.customId === 'list_prev') {
-        newPage = Math.max(0, newPage - 1);
-      } else if (interaction.customId === 'list_next') {
-        newPage = Math.min(totalPages - 1, newPage + 1);
-      }
-
-      state.currentPage = newPage;
-      await showPage(interaction, newPage, MAX_ROWS_PER_EMBED, EMBED_COLOR, totalPages);
-      
-      // Schedule cleanup of pagination state after 60 seconds of inactivity
-      setTimeout(() => {
-        listStreamersState.delete(interaction.user.id);
-      }, 60_000);
-      
-      return;
-    }
-
-    return;
-  }
-
   if (!interaction.isChatInputCommand()) return;
 
   switch (interaction.commandName) {
@@ -538,9 +476,6 @@ const handleInteractionCreate = async (interaction: Interaction): Promise<void> 
   case 'list-streamers': {
     if (!(await checkAdminPermission(interaction))) return;
 
-    const MAX_ROWS_PER_EMBED = 6;
-    const EMBED_COLOR = 0x91_46_FF; // Twitch purple
-
     try {
       const users = selectAllTrackedUsersStatement.all() as TrackedUser[];
 
@@ -549,11 +484,55 @@ const handleInteractionCreate = async (interaction: Interaction): Promise<void> 
         return;
       }
 
-      // Store state for pagination
-      const totalPages = Math.ceil(users.length / MAX_ROWS_PER_EMBED);
-      listStreamersState.set(interaction.user.id, { users, currentPage: 0, userId: interaction.user.id });
+      const totalPages = Math.ceil(users.length / LIST_ROWS_PER_PAGE);
+      const embed = buildListEmbed(users, 0, LIST_ROWS_PER_PAGE, LIST_EMBED_COLOR);
 
-      await showPage(interaction, 0, MAX_ROWS_PER_EMBED, EMBED_COLOR, totalPages);
+      // A single page needs no controls — avoids holding any pagination state at all.
+      if (totalPages === 1) {
+        await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+        break;
+      }
+
+      await interaction.reply({
+        embeds: [embed],
+        components: [buildListRow(0, totalPages)],
+        flags: MessageFlags.Ephemeral,
+      });
+
+      // Pagination state lives only for the lifetime of this collector — no global map,
+      // so nothing is retained once the message stops being interacted with.
+      let currentPage = 0;
+      const message = await interaction.fetchReply();
+      const collector = message.createMessageComponentCollector({
+        componentType: ComponentType.Button,
+        time: LIST_COLLECTOR_TIMEOUT_MS,
+      });
+
+      collector.on('collect', async (buttonInteraction) => {
+        if (buttonInteraction.user.id !== interaction.user.id) {
+          await buttonInteraction.reply({ content: 'These buttons are not for you!', flags: MessageFlags.Ephemeral });
+          return;
+        }
+
+        currentPage = buttonInteraction.customId === 'list_prev'
+          ? Math.max(0, currentPage - 1)
+          : Math.min(totalPages - 1, currentPage + 1);
+
+        await buttonInteraction.update({
+          embeds: [buildListEmbed(users, currentPage, LIST_ROWS_PER_PAGE, LIST_EMBED_COLOR)],
+          components: [buildListRow(currentPage, totalPages)],
+        });
+        collector.resetTimer();
+      });
+
+      collector.on('end', async () => {
+        // Grey out the buttons once paging expires so they don't look clickable.
+        try {
+          await interaction.editReply({ components: [buildListRow(currentPage, totalPages, true)] });
+        } catch {
+          // The ephemeral message may have been dismissed; nothing to clean up.
+        }
+      });
     } catch (error) {
       botLogger.error({ err: error }, 'Error listing streamers');
       await interaction.reply({ content: 'An error occurred while listing streamers.', flags: MessageFlags.Ephemeral });
