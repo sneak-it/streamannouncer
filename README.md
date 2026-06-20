@@ -1,6 +1,6 @@
-# StreamAnnouncer Bot
+# Stream Announcer
 
-A lightweight, Discord bot that automatically announces Twitch streams to a channel when particular users with a specific role go live.
+A lightweight Discord bot that automatically announces Twitch streams to a channel when particular users with a specific role go live.
 
 ## Features
 
@@ -10,10 +10,15 @@ A lightweight, Discord bot that automatically announces Twitch streams to a chan
 - **Admin Controls**: Restricted command for linking Discord users to Twitch accounts.
 - **Docker Ready**: Runs as a small, unprivileged Alpine-based container.
 
+## Screenshots
+
+<img width="652" height="670" alt="image" src="https://github.com/user-attachments/assets/16c92ea9-939a-4933-be5c-6fa0594b283d" />
+<img width="499" height="169" alt="image" src="https://github.com/user-attachments/assets/e0300627-3ac9-4f22-b475-42fc9474de5a" />
+
 ## Prerequisites
 
-- [Node.js 24+](https://nodejs.org/) (if running locally)
 - [Docker](https://www.docker.com/) & [Docker Compose](https://docs.docker.com/compose/) (recommended)
+- [Node.js 24+](https://nodejs.org/) (if running locally)
 - A [Discord Bot Token](https://discord.com/developers/applications)
 - A [Twitch Developer Application](https://dev.twitch.tv/console) (Client ID & Secret)
 
