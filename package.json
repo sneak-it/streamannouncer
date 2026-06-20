@@ -10,7 +10,8 @@
     "build": "tsc",
     "start": "tsx --env-file-if-exists=.env server.ts",
     "lint": "eslint . && tsc --noEmit",
-    "lint:fix": "eslint . --fix"
+    "lint:fix": "eslint . --fix",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "better-sqlite3": "^12.11.1",
