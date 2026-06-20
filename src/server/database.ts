@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { logger } from './logger.js';
+
 import Database from 'better-sqlite3';
 
 const dataDirectory = path.join(process.cwd(), 'data');
@@ -65,9 +67,9 @@ export function cleanupOldBackups(maxKeep: number): void {
   for (const file of toDelete) {
     try {
       fs.unlinkSync(path.join(dataDirectory, file));
-      console.log(`Deleted old backup: ${file}`);
+      logger.info({ file }, 'Deleted old backup');
     } catch (error) {
-      console.error({ err: error }, `Failed to delete old backup: ${file}`);
+      logger.error({ err: error, file }, 'Failed to delete old backup');
     }
   }
 }

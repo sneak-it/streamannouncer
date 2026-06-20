@@ -113,7 +113,7 @@ export default tseslint.config(
       'unicorn/prefer-number-properties': 'warn',
 
       // ========== General Rules (from js recommended) ==========
-      'no-console': 'off',
+      'no-console': 'error',
       'no-control-regex': 'off',
     },
   },
