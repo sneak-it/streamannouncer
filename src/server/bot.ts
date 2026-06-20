@@ -173,7 +173,6 @@ function buildStreamEmbed(
     viewer_count: number;
     thumbnail_url: string;
     started_at: string;
-    is_mature?: boolean;
   },
   profile?: TwitchUser,
 ): EmbedBuilder {

@@ -52,18 +52,6 @@ export async function createBackup(backupPath: string): Promise<void> {
 }
 
 /**
- * Gets the path to the most recent backup file in the data directory.
- * Returns null if no backups exist.
- */
-export function getLatestBackupPath(): string | undefined {
-  const backupFiles = fs.readdirSync(dataDirectory).filter(f => f.startsWith('bot-backup-') && f.endsWith('.db'));
-  if (backupFiles.length === 0) return undefined;
-  // Sort by name (which includes timestamp) to get the most recent
-  const sorted = backupFiles.toSorted((a, b) => a.localeCompare(b)).toReversed();
-  return path.join(dataDirectory, sorted[0]);
-}
-
-/**
  * Cleans up old backups, keeping only the most recent N backups.
  * @param maxKeep - The maximum number of backups to retain.
  */

@@ -217,29 +217,6 @@ export async function getTwitchToken() {
   return tokenState.refreshPromise;
 }
 
-export async function getStreams(usernames: string[]) {
-  if (usernames.length === 0) return [];
-  
-  const token = await getTwitchToken();
-  const clientId = process.env.TWITCH_CLIENT_ID;
-  const parameters = new URLSearchParams();
-  for (const u of usernames) parameters.append('user_login', u);
-  
-  const url = `https://api.twitch.tv/helix/streams?${parameters.toString()}`;
-  
-  return fetchWithRetry<TwitchStream[]>(
-    'getStreams',
-    url,
-    () => fetch(url, {
-      headers: {
-        'Client-ID': clientId!,
-        'Authorization': `Bearer ${token}`
-      }
-    }),
-    (data) => ((data as TwitchStreamsResponse).data ?? [])
-  );
-}
-
 export async function getUsers(usernames: string[]) {
   if (usernames.length === 0) return [];
   

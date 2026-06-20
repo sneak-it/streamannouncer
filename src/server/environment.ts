@@ -57,14 +57,3 @@ export function validateEnvironment(): void {
 
   logger.info('Environment validation passed. All required variables are set.');
 }
-
-/**
- * Gets the value of an environment variable, or a default if not set.
- * @param name - The environment variable name.
- * @param defaultValue - The default value to use if the variable is not set.
- * @returns The environment variable value or the default.
- */
-export function getEnvironmentWithDefault(name: string, defaultValue: string): string {
-  const value = process.env[name];
-  return value && value.trim() !== '' ? value.trim() : defaultValue;
-}
