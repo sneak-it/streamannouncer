@@ -9,8 +9,8 @@ import { clearTwitchToken, getStreamsByIds, getUsers, getUsersByIds, TwitchApiEr
 
 import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, EmbedBuilder, Events,
-  GatewayIntentBits, MessageFlags, PermissionsBitField, REST, Routes,
-  SlashCommandBuilder
+  GatewayIntentBits, InteractionContextType, MessageFlags, PermissionsBitField,
+  REST, Routes, SlashCommandBuilder
 } from 'discord.js';
 
 
@@ -231,6 +231,8 @@ const commands = [
   new SlashCommandBuilder()
     .setName('add-streamer')
     .setDescription('Link a Twitch username to a Discord user')
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator)
+    .setContexts(InteractionContextType.Guild)
     .addUserOption(option =>
       option.setName('user')
         .setDescription('The Discord user to link')
@@ -242,6 +244,8 @@ const commands = [
   new SlashCommandBuilder()
     .setName('remove-streamer')
     .setDescription('Remove a linked streamer')
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator)
+    .setContexts(InteractionContextType.Guild)
     .addUserOption(option =>
       option.setName('user')
         .setDescription('The Discord user to remove')
@@ -252,10 +256,14 @@ const commands = [
         .setRequired(false)),
   new SlashCommandBuilder()
     .setName('list-streamers')
-    .setDescription('List all tracked streamers'),
+    .setDescription('List all tracked streamers')
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator)
+    .setContexts(InteractionContextType.Guild),
   new SlashCommandBuilder()
     .setName('test-embed')
     .setDescription('Send a test live notification')
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator)
+    .setContexts(InteractionContextType.Guild)
     .addStringOption(option =>
       option.setName('username')
         .setDescription('The Twitch username to test with')
@@ -322,22 +330,27 @@ async function checkAdminPermission(interaction: ChatInputCommandInteraction): P
   const adminRoleIdValue = process.env.DISCORD_ADMIN_ROLE_ID;
   const adminRoleId = adminRoleIdValue?.trim();
 
-  if (!adminRoleId) return true;
-
+  // Server administrators always pass. When no admin role is configured, the
+  // Discord "Administrator" permission is the only gate (mirrored by each
+  // command's setDefaultMemberPermissions), so commands are never world-open.
   let hasPermission = interaction.memberPermissions?.has(PermissionsBitField.Flags.Administrator) ?? false;
 
-  if (!hasPermission && interaction.member) {
+  if (!hasPermission && adminRoleId && interaction.member) {
     const member = interaction.member;
-    if ('roles' in member && typeof member.roles === 'object' && 'cache' in member.roles && member.roles.cache instanceof Map && member.roles.cache.has(adminRoleId)) {
-      hasPermission = true;
-      
-      if (!hasPermission && interaction.guild) {
-         try {
-           const fetchedMember = await interaction.guild.members.fetch(interaction.user.id);
-           hasPermission = fetchedMember.roles.cache.has(adminRoleId);
-         } catch (error) {
-           botLogger.error({ err: error }, 'Failed to fetch member');
-         }
+
+    // Fast path: check the roles already cached on the interaction member.
+    if ('roles' in member && typeof member.roles === 'object' && 'cache' in member.roles && member.roles.cache instanceof Map) {
+      hasPermission = member.roles.cache.has(adminRoleId);
+    }
+
+    // Authoritative fallback: the cached roles can be incomplete, so fetch the
+    // member from the guild and re-check before denying.
+    if (!hasPermission && interaction.guild) {
+      try {
+        const fetchedMember = await interaction.guild.members.fetch(interaction.user.id);
+        hasPermission = fetchedMember.roles.cache.has(adminRoleId);
+      } catch (error) {
+        botLogger.error({ err: error }, 'Failed to fetch member');
       }
     }
   }
