@@ -782,16 +782,20 @@ async function executePoll() {
         const streams = await getStreamsByIds(chunk);
         liveStreams.push(...streams);
       } catch (error) {
+        // Any failure means we could not verify this chunk's streams this cycle.
+        // Mark them as failed so the offline handler does NOT treat them as
+        // offline and delete still-live announcements (e.g. on a transient 401).
+        for (const id of chunk) failedTwitchIds.add(id);
+
         if (error instanceof TwitchApiError) {
           logger.error({ error: error.message, status_code: error.statusCode }, 'Twitch API error');
           if (error.statusCode === 401) {
-            // Token expired, clear it and retry
+            // Token expired/invalid: clear it so the next chunk/cycle re-auths.
             clearTwitchToken();
             continue;
           }
         }
         logger.error({ err: error }, 'Failed to get streams');
-        for (const id of chunk) failedTwitchIds.add(id);
       }
     }
 
