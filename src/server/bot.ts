@@ -34,6 +34,7 @@ interface ActiveStream {
 const HEALTH_FILE = '/tmp/healthy';
 const USER_PROFILE_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
 const USER_PROFILE_CACHE_MAX_SIZE = 1000;
+const TWITCH_USERS_BATCH_SIZE = 100; // Twitch helix /users accepts up to 100 ids per request
 
 // Mutable bot state. Held in a single object so module-level bindings are never
 // reassigned from inside functions (unicorn/no-top-level-assignment-in-function).
@@ -104,40 +105,43 @@ function evictLeastRecentlyUsed(): void {
 }
 
 /**
- * Gets a user profile from cache or fetches it from Twitch API.
- * Uses LRU eviction when cache reaches max size.
+ * Resolves multiple user profiles at once. Cache hits are served directly and
+ * all cache misses are fetched in batched requests (up to 100 ids per Twitch
+ * call) instead of one serial round-trip per user.
  */
-async function getUserProfile(userId: string): Promise<TwitchUser | undefined> {
-  const cached = userProfileCache.get(userId);
-  if (cached && Date.now() - cached.timestamp < USER_PROFILE_CACHE_TTL) {
-    return cached.profile;
-  }
-  
-  try {
-    const users = await getUsersByIds([userId]);
-    if (users.length > 0) {
-      // Evict expired entry before setting new one
-      if (cached) userProfileCache.delete(userId);
-      // Enforce max size with LRU eviction
-      while (userProfileCache.size >= USER_PROFILE_CACHE_MAX_SIZE) {
-        evictLeastRecentlyUsed();
-      }
-      userProfileCache.set(userId, {
-        profile: users[0],
-        timestamp: Date.now()
-      });
-      return users[0];
+async function getUserProfiles(userIds: string[]): Promise<Map<string, TwitchUser>> {
+  const result = new Map<string, TwitchUser>();
+  const now = Date.now();
+  const misses: string[] = [];
+
+  for (const userId of userIds) {
+    const cached = userProfileCache.get(userId);
+    if (cached && now - cached.timestamp < USER_PROFILE_CACHE_TTL) {
+      result.set(userId, cached.profile);
+    } else {
+      if (cached) userProfileCache.delete(userId); // drop expired entry
+      misses.push(userId);
     }
-  } catch (error) {
-    logger.error({ err: error, user_id: userId }, 'Failed to get user profile');
   }
-  
-  // Clean up expired entry on cache miss
-  if (cached && Date.now() - cached.timestamp >= USER_PROFILE_CACHE_TTL) {
-    userProfileCache.delete(userId);
+
+  // Fetch misses in batches; Twitch accepts up to 100 ids per request.
+  for (let index = 0; index < misses.length; index += TWITCH_USERS_BATCH_SIZE) {
+    const batch = misses.slice(index, index + TWITCH_USERS_BATCH_SIZE);
+    try {
+      const users = await getUsersByIds(batch);
+      for (const user of users) {
+        while (userProfileCache.size >= USER_PROFILE_CACHE_MAX_SIZE) {
+          evictLeastRecentlyUsed();
+        }
+        userProfileCache.set(user.id, { profile: user, timestamp: Date.now() });
+        result.set(user.id, user);
+      }
+    } catch (error) {
+      logger.error({ err: error, user_ids: batch }, 'Failed to get user profiles');
+    }
   }
-  
-  return undefined;
+
+  return result;
 }
 
 /**
@@ -807,14 +811,8 @@ async function executePoll() {
     const channel = guild.channels.cache.get(channelId) as TextChannel;
     if (!channel) return;
 
-    // Fetch user profiles for avatars (using cache)
-    const userProfileMap = new Map<string, TwitchUser>();
-    for (const stream of liveStreams) {
-      const profile = await getUserProfile(stream.user_id);
-      if (profile) {
-        userProfileMap.set(stream.user_id, profile);
-      }
-    }
+    // Fetch user profiles for avatars (cached; cache misses are batched into one request)
+    const userProfileMap = await getUserProfiles(liveStreams.map(stream => stream.user_id));
 
     const announcementMessage = process.env.DISCORD_ANNOUNCEMENT_MESSAGE || 'Hey @everyone, {user} is now live on Twitch! {url}';
 
