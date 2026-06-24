@@ -35,6 +35,7 @@ const HEALTH_FILE = '/tmp/healthy';
 const USER_PROFILE_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
 const USER_PROFILE_CACHE_MAX_SIZE = 1000;
 const TWITCH_USERS_BATCH_SIZE = 100; // Twitch helix /users accepts up to 100 ids per request
+const MEMBER_FETCH_TIMEOUT_MS = 30_000; // Fail fast on a degraded gateway instead of the ~120s default
 
 // Mutable bot state. Held in a single object so module-level bindings are never
 // reassigned from inside functions (unicorn/no-top-level-assignment-in-function).
@@ -721,7 +722,7 @@ async function executePoll() {
     if (roleId) {
       try {
         const discordIds = trackedUsers.map(u => u.discord_id);
-        const members = await guild.members.fetch({ user: discordIds });
+        const members = await guild.members.fetch({ user: discordIds, time: MEMBER_FETCH_TIMEOUT_MS });
         for (const user of trackedUsers) {
           const member = members.get(user.discord_id);
           if (member && member.roles.cache.has(roleId)) {
@@ -731,7 +732,11 @@ async function executePoll() {
           }
         }
       } catch (error) {
-        logger.error({ err: error }, 'Error fetching members to check roles');
+        if (error instanceof Error && 'code' in error && error.code === 'GuildMembersTimeout') {
+          logger.warn('Timed out fetching members to check roles; skipping this poll cycle');
+        } else {
+          logger.error({ err: error }, 'Error fetching members to check roles');
+        }
         return; // Skip this cycle if we can't verify roles
       }
     } else {
