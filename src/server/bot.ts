@@ -4,6 +4,7 @@ import type { ChatInputCommandInteraction, GuildMember, Interaction, TextChannel
 import fs from 'node:fs';
 
 import database, { createTimestampedBackup } from './database.js';
+import { parsePositiveIntEnvironment } from './environment.js';
 import { logger } from './logger.js';
 import { clearTwitchToken, getStreamsByIds, getUsers, getUsersByIds, TwitchApiError } from './twitch.js';
 
@@ -369,9 +370,9 @@ const handleClientReady = async (): Promise<void> => {
 
   // Start periodic database backups (every 60 minutes by default)
   const isBackupEnabled = process.env.BACKUP_ENABLED !== 'false';
-  const backupIntervalMinutes = Number(process.env.BACKUP_INTERVAL_MINUTES ?? '60');
-  const backupMaxKeep = Number(process.env.BACKUP_MAX_KEEP ?? '5');
-  if (isBackupEnabled && !Number.isNaN(backupIntervalMinutes) && backupIntervalMinutes > 0) {
+  const backupIntervalMinutes = parsePositiveIntEnvironment('BACKUP_INTERVAL_MINUTES', 60);
+  const backupMaxKeep = parsePositiveIntEnvironment('BACKUP_MAX_KEEP', 5);
+  if (isBackupEnabled) {
     // Run initial backup immediately, then periodically
     try {
       await createTimestampedBackup(backupMaxKeep);
@@ -767,8 +768,8 @@ export async function stopBot() {
 
   // Create a final backup before shutdown
   const isBackupEnabled = process.env.BACKUP_ENABLED !== 'false';
-  const backupMaxKeep = Number(process.env.BACKUP_MAX_KEEP ?? '5');
-  if (isBackupEnabled && !Number.isNaN(backupMaxKeep)) {
+  const backupMaxKeep = parsePositiveIntEnvironment('BACKUP_MAX_KEEP', 5);
+  if (isBackupEnabled) {
     try {
       await createTimestampedBackup(backupMaxKeep);
       botLogger.info('Final shutdown database backup completed');

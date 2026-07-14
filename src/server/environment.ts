@@ -25,6 +25,26 @@ const ENV_VARS: EnvironmentVariableInfo[] = [
 ];
 
 /**
+ * Parses an environment variable as a positive integer, falling back to a
+ * default when unset or invalid. A malformed value (e.g. BACKUP_MAX_KEEP=five)
+ * is logged and defaulted rather than silently coerced to NaN, which would
+ * otherwise disable backup pruning or turn off backups entirely.
+ * @param name - The environment variable name.
+ * @param defaultValue - The value to use when unset or invalid.
+ */
+export function parsePositiveIntEnvironment(name: string, defaultValue: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return defaultValue;
+
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    logger.warn({ name, value: raw, default: defaultValue }, 'Invalid numeric environment variable (expected a positive integer); using default');
+    return defaultValue;
+  }
+  return parsed;
+}
+
+/**
  * Validates that all required environment variables are set.
  * @throws {Error} If any required environment variable is missing or empty.
  */

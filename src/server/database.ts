@@ -58,12 +58,16 @@ export async function createBackup(backupPath: string): Promise<void> {
  * @param maxKeep - The maximum number of backups to retain.
  */
 export function cleanupOldBackups(maxKeep: number): void {
+  // Defensive: a NaN/invalid limit would make `length <= maxKeep` false and
+  // `slice(0, maxKeep)` empty, silently disabling pruning so backups pile up.
+  const limit = Number.isSafeInteger(maxKeep) && maxKeep >= 0 ? maxKeep : 5;
+
   const backupFiles = fs.readdirSync(dataDirectory).filter(f => f.startsWith('bot-backup-') && f.endsWith('.db'));
-  if (backupFiles.length <= maxKeep) return; // Nothing to clean up
+  if (backupFiles.length <= limit) return; // Nothing to clean up
 
   // Sort by name (timestamp-based) and remove oldest first
   const sorted = backupFiles.toSorted((a, b) => a.localeCompare(b));
-  const toDelete = sorted.slice(0, sorted.length - maxKeep);
+  const toDelete = sorted.slice(0, sorted.length - limit);
   for (const file of toDelete) {
     try {
       fs.unlinkSync(path.join(dataDirectory, file));
