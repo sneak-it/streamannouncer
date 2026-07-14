@@ -1,5 +1,5 @@
 import type { TwitchStream, TwitchUser } from './twitch.js';
-import type { ChatInputCommandInteraction, Interaction, TextChannel } from 'discord.js';
+import type { ChatInputCommandInteraction, GuildMember, Interaction, TextChannel } from 'discord.js';
 
 import fs from 'node:fs';
 
@@ -45,6 +45,13 @@ const USER_PROFILE_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
 const USER_PROFILE_CACHE_MAX_SIZE = 1000;
 const TWITCH_USERS_BATCH_SIZE = 100; // Twitch helix /users accepts up to 100 ids per request
 const MEMBER_FETCH_TIMEOUT_MS = 30_000; // Fail fast on a degraded gateway instead of the ~120s default
+const MEMBER_FETCH_BATCH_SIZE = 100; // Gateway REQUEST_GUILD_MEMBERS accepts at most 100 user_ids per call
+
+// Discord API error codes that mean the target no longer exists, so an active
+// announcement row can be safely dropped. Any other error is transient and the
+// row must be retained so the next cycle retries.
+const DISCORD_ERROR_UNKNOWN_CHANNEL = 10_003;
+const DISCORD_ERROR_UNKNOWN_MESSAGE = 10_008;
 
 // Mutable bot state. Held in a single object so module-level bindings are never
 // reassigned from inside functions (unicorn/no-top-level-assignment-in-function).
@@ -158,6 +165,18 @@ async function getUserProfiles(userIds: string[]): Promise<Map<string, TwitchUse
   }
 
   return result;
+}
+
+/**
+ * Extracts the numeric Discord API error code from a thrown error, if present.
+ * discord.js attaches `code` to DiscordAPIError (e.g. 10008 Unknown Message).
+ */
+function getDiscordErrorCode(error: unknown): number | undefined {
+  if (typeof error === 'object' && error !== null && 'code' in error) {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === 'number') return code;
+  }
+  return undefined;
 }
 
 /**
@@ -817,7 +836,15 @@ async function executePoll() {
     if (roleId) {
       try {
         const discordIds = trackedUsers.map(u => u.discord_id);
-        const members = await guild.members.fetch({ user: discordIds, time: MEMBER_FETCH_TIMEOUT_MS });
+        // The gateway REQUEST_GUILD_MEMBERS op rejects >100 user_ids: discord.js
+        // passes the array straight through, so a single fetch of the whole set
+        // times out past 100 tracked users. Fetch in batches and merge.
+        const members = new Map<string, GuildMember>();
+        for (let index = 0; index < discordIds.length; index += MEMBER_FETCH_BATCH_SIZE) {
+          const batch = discordIds.slice(index, index + MEMBER_FETCH_BATCH_SIZE);
+          const fetched = await guild.members.fetch({ user: batch, time: MEMBER_FETCH_TIMEOUT_MS });
+          for (const [id, member] of fetched) members.set(id, member);
+        }
         for (const user of trackedUsers) {
           const member = members.get(user.discord_id);
           if (member && member.roles.cache.has(roleId)) {
@@ -888,28 +915,48 @@ async function executePoll() {
 
     // Handle offline streams (delete message)
     for (const active of activeStreams) {
-      if (!liveUserIds.has(active.twitch_id) && !failedTwitchIds.has(active.twitch_id)) {
-        try {
-          const channel = guild.channels.cache.get(active.channel_id) as TextChannel;
-          if (channel) {
-            const message = await channel.messages.fetch(active.message_id);
-            if (message) await message.delete();
-            logger.info({ twitch_id: active.twitch_id, message_id: active.message_id }, 'Stream went offline, deleted announcement');
-          }
-        } catch (error) {
-          if (typeof error === 'object' && error !== null && 'code' in error && (error as { code?: number }).code === 10_008) { // Discord error code for unknown message
-            logger.debug({ message_id: active.message_id }, 'Message already deleted, removing from DB');
-          } else {
-            logger.error({ err: error, twitch_id: active.twitch_id }, 'Failed to delete message');
-          }
+      // Skip streams that are still live, and those whose live status we could
+      // not verify this cycle (failed Twitch fetch) — deleting those would
+      // remove a still-valid announcement.
+      if (liveUserIds.has(active.twitch_id) || failedTwitchIds.has(active.twitch_id)) continue;
+
+      const channel = guild.channels.cache.get(active.channel_id);
+      if (!channel || !channel.isTextBased()) {
+        // The channel is gone or no longer text-based, so the message is
+        // unreachable — drop the row (there is nothing left to clean up).
+        logger.warn({ channel_id: active.channel_id, twitch_id: active.twitch_id }, 'Announcement channel missing or not text-based; dropping active stream');
+        deleteActiveStreamByTwitchIdStatement.run(active.twitch_id);
+        continue;
+      }
+
+      try {
+        const message = await channel.messages.fetch(active.message_id);
+        await message.delete();
+        logger.info({ twitch_id: active.twitch_id, message_id: active.message_id }, 'Stream went offline, deleted announcement');
+        // Success: the message is gone, so the row can go too.
+        deleteActiveStreamByTwitchIdStatement.run(active.twitch_id);
+      } catch (error) {
+        const code = getDiscordErrorCode(error);
+        if (code === DISCORD_ERROR_UNKNOWN_MESSAGE || code === DISCORD_ERROR_UNKNOWN_CHANNEL) {
+          // The message/channel already doesn't exist — nothing to delete, drop the row.
+          logger.debug({ message_id: active.message_id, code }, 'Message already gone, removing from DB');
           deleteActiveStreamByTwitchIdStatement.run(active.twitch_id);
+        } else {
+          // Transient or permission error (e.g. missing Manage Messages, 500):
+          // keep the row so the next cycle retries instead of orphaning the message.
+          logger.error({ err: error, twitch_id: active.twitch_id }, 'Failed to delete announcement; keeping row to retry next cycle');
         }
       }
     }
 
     // Handle online streams (post or update message)
-    const channel = guild.channels.cache.get(channelId) as TextChannel;
-    if (!channel) return;
+    const channel = guild.channels.cache.get(channelId);
+    if (!channel || !channel.isTextBased()) {
+      // Misconfigured/missing DISCORD_CHANNEL_ID, or the bot lost View Channel:
+      // log loudly (once per cycle) rather than silently skipping all announcements.
+      logger.warn({ channel_id: channelId }, 'Announcement channel not found or not text-based; skipping online announcements this cycle');
+      return;
+    }
 
     // Fetch user profiles for avatars (cached; cache misses are batched into one request)
     const userProfileMap = await getUserProfiles(liveStreams.map(stream => stream.user_id));
@@ -941,14 +988,20 @@ async function executePoll() {
         // Update existing message
         try {
           const message = await channel.messages.fetch(active.message_id);
-          if (message) {
-            await message.edit({ embeds: [embed] });
-            botLogger.info({ twitch_id: twitchId, twitch_username: username, message_id: active.message_id }, 'Stream announcement updated');
-          }
+          await message.edit({ embeds: [embed] });
+          botLogger.info({ twitch_id: twitchId, twitch_username: username, message_id: active.message_id }, 'Stream announcement updated');
         } catch (error) {
-          botLogger.error({ err: error, twitch_username: username }, 'Failed to update message');
-          // If message deleted, remove from active_streams so it posts again next time
-          deleteActiveStreamByTwitchIdStatement.run(twitchId);
+          const code = getDiscordErrorCode(error);
+          if (code === DISCORD_ERROR_UNKNOWN_MESSAGE || code === DISCORD_ERROR_UNKNOWN_CHANNEL) {
+            // The original message/channel is gone — drop the row so a fresh
+            // announcement is posted next cycle.
+            botLogger.warn({ twitch_id: twitchId, twitch_username: username, code }, 'Announcement message missing; will re-post next cycle');
+            deleteActiveStreamByTwitchIdStatement.run(twitchId);
+          } else {
+            // Transient/permission error: keep the row so we don't post a
+            // duplicate while the old message still sits in the channel.
+            botLogger.error({ err: error, twitch_username: username }, 'Failed to update announcement; keeping row to avoid duplicate');
+          }
         }
       } else {
         // Post new message
