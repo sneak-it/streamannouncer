@@ -33,14 +33,18 @@ interface ActiveStream {
 
 // Constants
 const HEALTH_FILE = '/tmp/healthy';
-const POLL_INTERVAL_MS = 5 * 60 * 1000; // Poll Twitch every 5 minutes
+// Poll Twitch every 5 minutes by default; overridable via POLL_INTERVAL_MINUTES
+// (validated as a positive integer, so the effective floor is 1 minute).
+const POLL_INTERVAL_MINUTES = parsePositiveIntEnvironment('POLL_INTERVAL_MINUTES', 5);
+const POLL_INTERVAL_MS = POLL_INTERVAL_MINUTES * 60 * 1000;
 // A completed poll cycle refreshes the health file. If none completes within
 // this window the poll loop is wedged (an await that never resolves), which a
 // restart can fix — so the watchdog exits. This is deliberately decoupled from
 // Twitch/Discord API success: a Twitch outage is a handled path that still
-// completes a cycle, so it never trips this. Kept above 2 poll intervals so a
-// single slow cycle is never mistaken for a hang.
-const HEALTH_STALE_MS = 11 * 60 * 1000;
+// completes a cycle, so it never trips this. Derived from the poll interval and
+// kept above 2 poll intervals (plus a minute of slack) so a single slow cycle
+// is never mistaken for a hang.
+const HEALTH_STALE_MS = 2 * POLL_INTERVAL_MS + 60 * 1000;
 const HEALTH_WATCHDOG_INTERVAL_MS = 60 * 1000; // How often to check for a wedged loop
 const USER_PROFILE_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
 const USER_PROFILE_CACHE_MAX_SIZE = 1000;

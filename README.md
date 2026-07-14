@@ -80,6 +80,9 @@ In the **Bot** tab of the Discord Developer Portal, you must toggle the followin
 | `DISCORD_ANNOUNCEMENT_MESSAGE` | The message template. Supports `{user}` (Twitch name), `{mention}` (Discord mention), and `{url}` (Twitch URL). |
 | `TWITCH_CLIENT_ID` | Your Twitch App Client ID |
 | `TWITCH_CLIENT_SECRET` | Your Twitch App Client Secret |
+| `POLL_INTERVAL_MINUTES` | How often to poll Twitch for live streams, in minutes (positive integer, default: 5). |
+
+> **Note:** If you raise `POLL_INTERVAL_MINUTES` above the default, also relax the container `HEALTHCHECK` window (`-mmin -11` in the `Dockerfile`/`docker-compose.yml`), which is sized for the 5-minute default (~2 poll intervals). Otherwise a slower-but-healthy bot will be marked unhealthy.
 
 ## Commands
 
