@@ -513,7 +513,7 @@ const handleInteractionCreate = async (interaction: Interaction): Promise<void> 
 
     // Security: Input Validation
     // Twitch usernames must be 4-25 characters long and contain only alphanumeric characters and underscores.
-    const twitchUsernameRegex = /^[a-zA-Z0-9_]{4,25}$/;
+    const twitchUsernameRegex = /^[a-zA-Z0-9_]{3,25}$/;
     if (!twitchUsernameRegex.test(username)) {
       await interaction.reply({ 
         content: 'Invalid Twitch username format. It must be 4-25 characters long and contain only letters, numbers, and underscores.', 
