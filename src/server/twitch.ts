@@ -64,30 +64,36 @@ export class TwitchApiError extends Error {
 const RATE_LIMIT_RESET_HEADER = 'Ratelimit-Reset';
 const MAX_RETRY_ATTEMPTS = 3;
 const INITIAL_BACKOFF_MS = 1000;
+const MAX_RATE_LIMIT_WAIT_MS = 30_000; // Cap so a far-future reset header can't stall a cycle
 
 /**
- * Parses the Ratelimit-Reset header and waits if present.
- * Returns true if a wait was performed, false otherwise.
+ * Computes how long to wait before retrying a 429, based on the
+ * Ratelimit-Reset header (a Unix timestamp in seconds). Returns 0 when there is
+ * no usable header so the caller can fall back to exponential backoff. The
+ * actual sleep happens in fetchWithRetry — this function only reads the header.
  */
-function shouldWaitForRateLimit(response: Response): boolean {
-  if (response.status !== 429) return false;
+function getRateLimitWaitMs(response: Response): number {
+  if (response.status !== 429) return 0;
 
   const resetHeader = response.headers.get(RATE_LIMIT_RESET_HEADER);
-  if (resetHeader) {
-    const resetTime = Number(resetHeader);
-    const waitTime = (resetTime * 1000) - Date.now() + 1000;
-    if (waitTime > 0) {
-      logger.warn({ wait_time_ms: waitTime }, 'Twitch API rate limited, waiting for reset');
-      return true;
-    }
-  }
-  return false;
+  if (!resetHeader) return 0;
+
+  const resetTime = Number(resetHeader);
+  if (Number.isNaN(resetTime)) return 0;
+
+  // +1s cushion past the reset instant to avoid racing the window boundary.
+  const waitTime = (resetTime * 1000) - Date.now() + 1000;
+  if (waitTime <= 0) return 0;
+
+  return Math.min(waitTime, MAX_RATE_LIMIT_WAIT_MS);
 }
 
 /**
- * Wraps a Twitch API fetch with automatic retry on 429 (rate limit).
- * Respects Ratelimit-Reset header and uses exponential backoff as fallback.
- * Does NOT make test API calls to check rate limit status.
+ * Wraps a Twitch API fetch with automatic retry. Retries 429 (respecting the
+ * Ratelimit-Reset header, else exponential backoff), 5xx server errors, and
+ * network/parse errors. Fails fast on 401 (auth) and other 4xx client errors,
+ * which retrying cannot fix. Does NOT make test API calls to check rate limit
+ * status.
  */
 async function fetchWithRetry<T>(
   operation: string,
@@ -119,8 +125,11 @@ async function fetchWithRetry<T>(
       
       // Rate limit (429): wait and retry
       if (response.status === 429 && attempt < MAX_RETRY_ATTEMPTS) {
-        if (shouldWaitForRateLimit(response)) {
-          // Already waited for reset header, retry once
+        const resetWaitMs = getRateLimitWaitMs(response);
+        if (resetWaitMs > 0) {
+          // Honor the server's reset window before retrying.
+          logger.warn({ operation, wait_time_ms: resetWaitMs, attempt: attempt + 1, max_attempts: MAX_RETRY_ATTEMPTS }, 'Twitch API rate limited, waiting for reset');
+          await new Promise(resolve => setTimeout(resolve, resetWaitMs));
           continue;
         }
         // No reset header: use exponential backoff
@@ -130,7 +139,15 @@ async function fetchWithRetry<T>(
         continue;
       }
       
-      // Non-retryable error: log and throw immediately
+      // Server error (5xx): transient, retry with backoff before giving up.
+      if (response.status >= 500 && attempt < MAX_RETRY_ATTEMPTS) {
+        const backoffTime = INITIAL_BACKOFF_MS * Math.pow(2, attempt);
+        logger.warn({ operation, status: response.status, backoff_ms: backoffTime, attempt: attempt + 1, max_attempts: MAX_RETRY_ATTEMPTS }, 'Twitch API server error, retrying');
+        await new Promise(resolve => setTimeout(resolve, backoffTime));
+        continue;
+      }
+
+      // Non-retryable error (4xx, or a 5xx that exhausted its retries): throw.
       logger.warn({ operation, status: response.status, statusText: response.statusText }, 'Twitch API error');
       throw new TwitchApiError(
         `Twitch API error for ${operation}: ${response.statusText} (${response.status})`,
@@ -138,11 +155,13 @@ async function fetchWithRetry<T>(
         response.headers
       );
     } catch (error) {
-      // Re-throw auth failures immediately
-      if (error instanceof TwitchApiError && error.statusCode === 401) {
+      // A TwitchApiError here is an already-classified HTTP failure (auth, an
+      // exhausted 5xx, or a non-retryable 4xx) — the retry decision was made
+      // above, so propagate it without another round of backoff. Only genuine
+      // network/parse errors (not TwitchApiError) fall through to retry.
+      if (error instanceof TwitchApiError) {
         throw error;
       }
-      // For other errors (network, parse), retry with backoff
       lastNonRateLimitError = error instanceof Error ? error : new Error(String(error));
       if (attempt < MAX_RETRY_ATTEMPTS) {
         const backoffTime = INITIAL_BACKOFF_MS * Math.pow(2, attempt);
