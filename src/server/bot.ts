@@ -32,6 +32,15 @@ interface ActiveStream {
 
 // Constants
 const HEALTH_FILE = '/tmp/healthy';
+const POLL_INTERVAL_MS = 5 * 60 * 1000; // Poll Twitch every 5 minutes
+// A completed poll cycle refreshes the health file. If none completes within
+// this window the poll loop is wedged (an await that never resolves), which a
+// restart can fix — so the watchdog exits. This is deliberately decoupled from
+// Twitch/Discord API success: a Twitch outage is a handled path that still
+// completes a cycle, so it never trips this. Kept above 2 poll intervals so a
+// single slow cycle is never mistaken for a hang.
+const HEALTH_STALE_MS = 11 * 60 * 1000;
+const HEALTH_WATCHDOG_INTERVAL_MS = 60 * 1000; // How often to check for a wedged loop
 const USER_PROFILE_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
 const USER_PROFILE_CACHE_MAX_SIZE = 1000;
 const TWITCH_USERS_BATCH_SIZE = 100; // Twitch helix /users accepts up to 100 ids per request
@@ -47,6 +56,10 @@ const botState: {
   pollIntervalId: ReturnType<typeof setInterval> | undefined;
   // Periodic backup timer reference for cleanup on shutdown
   backupIntervalId: ReturnType<typeof setInterval> | undefined;
+  // Health watchdog timer reference for cleanup on shutdown
+  healthWatchdogId: ReturnType<typeof setInterval> | undefined;
+  // Timestamp (ms) of the last completed poll cycle; drives the health signal
+  lastHealthyAt: number;
   // Whether the Discord client has reached the ready state
   isReady: boolean;
 } = {
@@ -54,6 +67,8 @@ const botState: {
   pollLock: Promise.resolve(),
   pollIntervalId: undefined,
   backupIntervalId: undefined,
+  healthWatchdogId: undefined,
+  lastHealthyAt: 0,
   isReady: false,
 };
 
@@ -273,16 +288,27 @@ const commands = [
 
 const botLogger = logger.child({ name: 'bot' });
 
+/**
+ * Records a liveness heartbeat: (re)writes the health file so its mtime is
+ * current and records the timestamp the watchdog reads. Called on ready and at
+ * the end of every completed poll cycle — the signal is "the loop is running",
+ * not "Twitch/Discord are reachable".
+ */
+function recordHealthy(): void {
+  botState.lastHealthyAt = Date.now();
+  try {
+    fs.writeFileSync(HEALTH_FILE, 'ok');
+  } catch (error) {
+    botLogger.error({ err: error }, 'Failed to update health file');
+  }
+}
+
 const handleClientReady = async (): Promise<void> => {
   botLogger.info({ username: client.user?.tag }, 'Bot logged in');
   botState.isReady = true;
 
-  // Create health file for Docker healthcheck
-  try {
-    fs.writeFileSync(HEALTH_FILE, 'ok');
-  } catch (error) {
-    botLogger.error({ err: error }, 'Failed to create health file');
-  }
+  // Emit an initial heartbeat so the healthcheck passes before the first poll.
+  recordHealthy();
 
   // Register commands
   const token = process.env.DISCORD_TOKEN;
@@ -307,7 +333,19 @@ const handleClientReady = async (): Promise<void> => {
   // Start the recurring poll only now that the client is ready. Registering it
   // before login would leave a live timer holding the event loop open on a
   // failed login — a zombie process that never announces and never restarts.
-  botState.pollIntervalId = setInterval(runPoll, 5 * 60 * 1000);
+  botState.pollIntervalId = setInterval(runPoll, POLL_INTERVAL_MS);
+
+  // Watchdog: if the poll loop stops completing cycles (a hung await), the
+  // process is wedged-but-alive — a state a restart fixes. Exit so the restart
+  // policy recovers us. A Twitch outage does NOT trip this: those cycles still
+  // complete and refresh the heartbeat.
+  botState.healthWatchdogId = setInterval(() => {
+    const staleForMs = Date.now() - botState.lastHealthyAt;
+    if (staleForMs > HEALTH_STALE_MS) {
+      botLogger.fatal({ stale_ms: staleForMs }, 'Poll loop has not completed a cycle within the health window; exiting for restart.');
+      process.exit(1);
+    }
+  }, HEALTH_WATCHDOG_INTERVAL_MS);
 
   // Start periodic database backups (every 60 minutes by default)
   const isBackupEnabled = process.env.BACKUP_ENABLED !== 'false';
@@ -685,6 +723,12 @@ export async function stopBot() {
     botState.pollIntervalId = undefined;
   }
 
+  // Clear health watchdog so it can't exit(1) mid-shutdown
+  if (botState.healthWatchdogId !== undefined) {
+    clearInterval(botState.healthWatchdogId);
+    botState.healthWatchdogId = undefined;
+  }
+
   // Clear backup interval to prevent further execution
   if (botState.backupIntervalId !== undefined) {
     clearInterval(botState.backupIntervalId);
@@ -728,6 +772,10 @@ async function runPoll() {
       await executePoll();
     } catch (error) {
       logger.error({ err: error }, 'Error in polling loop');
+    } finally {
+      // A cycle that ran to completion — even one that logged a handled Twitch
+      // error — proves the loop is alive. Refresh the heartbeat regardless.
+      recordHealthy();
     }
   })();
   return botState.pollLock;

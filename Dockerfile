@@ -36,6 +36,10 @@ ENV TZ=America/New_York
 # Run the bot
 CMD ["node", "dist/server.js"]
 
-# Health check: verify the bot has connected to Discord
+# Health check: the bot refreshes /tmp/healthy at the end of every completed
+# poll cycle. Require it to have been touched within the last 11 minutes (>2
+# poll intervals) so a stale-but-present file reads as unhealthy. Note: plain
+# Docker/Compose does not restart on unhealthy — recovery comes from the
+# in-process watchdog exiting; this probe is for observability/orchestrators.
 HEALTHCHECK --interval=60s --timeout=5s --start-period=30s --retries=3 \
-  CMD test -f /tmp/healthy || exit 1
+  CMD find /tmp/healthy -mmin -11 2>/dev/null | grep -q . || exit 1
