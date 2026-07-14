@@ -102,6 +102,7 @@ const upsertTrackedUserStatement = database.prepare(`
     added_at = excluded.added_at,
     added_by = excluded.added_by
 `);
+const selectTrackedUserByTwitchIdStatement = database.prepare('SELECT * FROM tracked_users WHERE twitch_id = ?');
 const deleteTrackedUserByDiscordIdStatement = database.prepare('DELETE FROM tracked_users WHERE discord_id = ?');
 const deleteTrackedUserByTwitchUsernameStatement = database.prepare('DELETE FROM tracked_users WHERE twitch_username = ?');
 const selectAllActiveStreamsStatement = database.prepare('SELECT * FROM active_streams');
@@ -524,6 +525,16 @@ const handleInteractionCreate = async (interaction: Interaction): Promise<void> 
       }
       
       const twitchUser = users[0];
+
+      // Prevent duplicate twitch_id links
+      const existingLink = selectTrackedUserByTwitchIdStatement.get(twitchUser.id) as TrackedUser | undefined;
+      if (existingLink && existingLink.discord_id !== targetUser.id) {
+        await interaction.reply({
+          content: `Twitch account **${twitchUser.login}** is already linked to <@${existingLink.discord_id}>. Remove that link first if you want to reassign it.`,
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
 
       upsertTrackedUserStatement.run(targetUser.id, twitchUser.login, twitchUser.id, Date.now(), interaction.user.id);
 
