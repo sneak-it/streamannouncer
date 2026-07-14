@@ -653,7 +653,7 @@ export async function startBot() {
   const token = process.env.DISCORD_TOKEN;
   if (!token) {
     logger.error('DISCORD_TOKEN environment variable is required');
-    return;
+    process.exit(1);
   }
 
   // Register event handlers before logging in
@@ -663,6 +663,11 @@ export async function startBot() {
   // rethrown and crashes the process. Log it and let discord.js keep reconnecting.
   client.on(Events.Error, (error) => {
     botLogger.error({ err: error }, 'Discord client error');
+  });
+  // Stop bot if session invalidated. Usually auth issues or token revocation.
+  client.on(Events.Invalidated, () => {
+    botLogger.fatal('Discord session invalidated; the client will not reconnect. Exiting.');
+    process.exit(1);
   });
 
   try {
