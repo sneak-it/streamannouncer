@@ -409,9 +409,31 @@ function buildListRow(page: number, totalPages: number, isDisabled = false): Act
   return new ActionRowBuilder<ButtonBuilder>().addComponents(previousButton, nextButton);
 }
 
+// Reply to an interaction without ever throwing: discord.js rejects if the
+// interaction was already answered or its 3s token expired, and an unhandled
+// rejection here would crash the process. Pick the correct method for the
+// interaction's current state and swallow (log) any failure.
+const safeRespondToInteraction = async (
+  interaction: ChatInputCommandInteraction,
+  content: string,
+): Promise<void> => {
+  try {
+    if (interaction.deferred) {
+      await interaction.editReply({ content });
+    } else if (interaction.replied) {
+      await interaction.followUp({ content, flags: MessageFlags.Ephemeral });
+    } else {
+      await interaction.reply({ content, flags: MessageFlags.Ephemeral });
+    }
+  } catch (error) {
+    botLogger.error({ err: error }, 'Failed to respond to interaction');
+  }
+};
+
 const handleInteractionCreate = async (interaction: Interaction): Promise<void> => {
   if (!interaction.isChatInputCommand()) return;
 
+  try {
   switch (interaction.commandName) {
   case 'add-streamer': {
     if (!(await checkAdminPermission(interaction))) return;
@@ -446,7 +468,7 @@ const handleInteractionCreate = async (interaction: Interaction): Promise<void> 
       await interaction.reply({ content: `Successfully linked Twitch account **${twitchUser.login}** to ${targetUser}!`, flags: MessageFlags.Ephemeral });
     } catch (error) {
       botLogger.error({ err: error, username }, 'Error linking Twitch account');
-      await interaction.reply({ content: 'An error occurred while verifying the Twitch account.', flags: MessageFlags.Ephemeral });
+      await safeRespondToInteraction(interaction, 'An error occurred while verifying the Twitch account.');
     }
   
   break;
@@ -473,7 +495,7 @@ const handleInteractionCreate = async (interaction: Interaction): Promise<void> 
       await (result && result.changes > 0 ? interaction.reply({ content: `Successfully removed the streamer.`, flags: MessageFlags.Ephemeral }) : interaction.reply({ content: `Could not find a tracked streamer matching that criteria.`, flags: MessageFlags.Ephemeral }));
     } catch (error) {
       botLogger.error({ err: error }, 'Error removing streamer');
-      await interaction.reply({ content: 'An error occurred while removing the streamer.', flags: MessageFlags.Ephemeral });
+      await safeRespondToInteraction(interaction, 'An error occurred while removing the streamer.');
     }
   
   break;
@@ -514,20 +536,26 @@ const handleInteractionCreate = async (interaction: Interaction): Promise<void> 
       });
 
       collector.on('collect', async (buttonInteraction) => {
-        if (buttonInteraction.user.id !== interaction.user.id) {
-          await buttonInteraction.reply({ content: 'These buttons are not for you!', flags: MessageFlags.Ephemeral });
-          return;
+        // The collector runs outside handleInteractionCreate's try/catch, so a
+        // rejected update() here would be an unhandled rejection — contain it.
+        try {
+          if (buttonInteraction.user.id !== interaction.user.id) {
+            await buttonInteraction.reply({ content: 'These buttons are not for you!', flags: MessageFlags.Ephemeral });
+            return;
+          }
+
+          currentPage = buttonInteraction.customId === 'list_prev'
+            ? Math.max(0, currentPage - 1)
+            : Math.min(totalPages - 1, currentPage + 1);
+
+          await buttonInteraction.update({
+            embeds: [buildListEmbed(users, currentPage, LIST_ROWS_PER_PAGE, LIST_EMBED_COLOR)],
+            components: [buildListRow(currentPage, totalPages)],
+          });
+          collector.resetTimer();
+        } catch (error) {
+          botLogger.error({ err: error }, 'Error handling pagination button');
         }
-
-        currentPage = buttonInteraction.customId === 'list_prev'
-          ? Math.max(0, currentPage - 1)
-          : Math.min(totalPages - 1, currentPage + 1);
-
-        await buttonInteraction.update({
-          embeds: [buildListEmbed(users, currentPage, LIST_ROWS_PER_PAGE, LIST_EMBED_COLOR)],
-          components: [buildListRow(currentPage, totalPages)],
-        });
-        collector.resetTimer();
       });
 
       collector.on('end', async () => {
@@ -540,7 +568,7 @@ const handleInteractionCreate = async (interaction: Interaction): Promise<void> 
       });
     } catch (error) {
       botLogger.error({ err: error }, 'Error listing streamers');
-      await interaction.reply({ content: 'An error occurred while listing streamers.', flags: MessageFlags.Ephemeral });
+      await safeRespondToInteraction(interaction, 'An error occurred while listing streamers.');
     }
 
     break;
@@ -600,12 +628,19 @@ const handleInteractionCreate = async (interaction: Interaction): Promise<void> 
       await interaction.editReply({ content: `Test embed sent to <#${channelId}>!` });
     } catch (error) {
       botLogger.error({ err: error }, 'Error sending test embed');
-      await interaction.editReply({ content: 'An error occurred while sending the test embed.' });
+      await safeRespondToInteraction(interaction, 'An error occurred while sending the test embed.');
     }
   
   break;
   }
   // No default
+  }
+  } catch (error) {
+    // Last line of defence: any handler throwing (including a failed reply in a
+    // case's own catch block) is contained here so it can never surface as an
+    // unhandled rejection and crash the process.
+    botLogger.error({ err: error, command: interaction.commandName }, 'Unhandled error handling interaction');
+    await safeRespondToInteraction(interaction, 'An unexpected error occurred while processing the command.');
   }
 };
 
@@ -619,6 +654,11 @@ export async function startBot() {
   // Register event handlers before logging in
   client.once(Events.ClientReady, handleClientReady);
   client.on(Events.InteractionCreate, handleInteractionCreate);
+  // Without a listener, an emitted 'error' on the client (an EventEmitter) is
+  // rethrown and crashes the process. Log it and let discord.js keep reconnecting.
+  client.on(Events.Error, (error) => {
+    botLogger.error({ err: error }, 'Discord client error');
+  });
 
   // Start the polling loop - every 5 minutes
   botState.pollIntervalId = setInterval(runPoll, 5 * 60 * 1000);

@@ -5,6 +5,16 @@ import { logger } from './src/server/logger.js';
 
 logger.info('Starting StreamAnnouncer bot...');
 
+// Catch unhandled rejections/exceptions
+process.on('unhandledRejection', (reason) => {
+  logger.fatal({ err: reason }, 'Unhandled promise rejection. Exiting.');
+  process.exit(1);
+});
+process.on('uncaughtException', (error) => {
+  logger.fatal({ err: error }, 'Uncaught exception. Exiting.');
+  process.exit(1);
+});
+
 // Validate all required environment variables before starting
 try {
   validateEnvironment();
