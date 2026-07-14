@@ -304,6 +304,11 @@ const handleClientReady = async (): Promise<void> => {
   // Run initial poll after bot is ready
   await runPoll();
 
+  // Start the recurring poll only now that the client is ready. Registering it
+  // before login would leave a live timer holding the event loop open on a
+  // failed login — a zombie process that never announces and never restarts.
+  botState.pollIntervalId = setInterval(runPoll, 5 * 60 * 1000);
+
   // Start periodic database backups (every 60 minutes by default)
   const isBackupEnabled = process.env.BACKUP_ENABLED !== 'false';
   const backupIntervalMinutes = Number(process.env.BACKUP_INTERVAL_MINUTES ?? '60');
@@ -659,9 +664,6 @@ export async function startBot() {
   client.on(Events.Error, (error) => {
     botLogger.error({ err: error }, 'Discord client error');
   });
-
-  // Start the polling loop - every 5 minutes
-  botState.pollIntervalId = setInterval(runPoll, 5 * 60 * 1000);
 
   try {
     await client.login(token);

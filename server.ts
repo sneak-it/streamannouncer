@@ -27,6 +27,7 @@ try {
   await startBot();
 } catch (error) {
   logger.error({ err: error }, 'Failed to start bot');
+  process.exit(1);
 }
 
 // Graceful shutdown handling
