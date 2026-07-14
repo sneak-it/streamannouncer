@@ -246,8 +246,9 @@ export async function getStreamsByIds(userIds: string[]) {
   const token = await getTwitchToken();
   const clientId = process.env.TWITCH_CLIENT_ID;
   const parameters = new URLSearchParams();
+  parameters.set('first', '100');
   for (const id of userIds) parameters.append('user_id', id);
-  
+
   const url = `https://api.twitch.tv/helix/streams?${parameters.toString()}`;
   
   return fetchWithRetry<TwitchStream[]>(
