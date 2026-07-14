@@ -770,6 +770,16 @@ export async function stopBot() {
     botState.backupIntervalId = undefined;
   }
 
+  // Wait for any in-flight poll cycle to finish before touching the database.
+  // The final backup (and the caller's closeDatabase()) must not run while a
+  // poll is still reading/writing rows, or prepared statements hit a closed DB
+  // and the backup can snapshot a half-written state.
+  try {
+    await botState.pollLock;
+  } catch {
+    // A failed poll already logs its own error; we only care that it settled.
+  }
+
   // Create a final backup before shutdown
   const isBackupEnabled = process.env.BACKUP_ENABLED !== 'false';
   const backupMaxKeep = parsePositiveIntEnvironment('BACKUP_MAX_KEEP', 5);
@@ -782,7 +792,9 @@ export async function stopBot() {
     }
   }
 
-  client.destroy();
+  // client.destroy() returns a Promise in discord.js v14; await it so the
+  // gateway connection is fully torn down before the process exits.
+  await client.destroy();
   botState.isReady = false;
   try {
     if (fs.existsSync(HEALTH_FILE)) {

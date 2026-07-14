@@ -30,8 +30,18 @@ try {
   process.exit(1);
 }
 
-// Graceful shutdown handling
+// Graceful shutdown handling. Guard against a second signal (e.g. SIGINT then
+// SIGTERM) re-entering shutdown and double-closing the database. Held in an
+// object so the flag is never reassigned from inside the handler
+// (unicorn/no-top-level-assignment-in-function).
+const shutdownState = { inProgress: false };
 const shutdown = async (signal: string) => {
+  if (shutdownState.inProgress) {
+    logger.info({ signal }, 'Shutdown already in progress; ignoring signal.');
+    return;
+  }
+  shutdownState.inProgress = true;
+
   logger.info({ signal }, 'Received signal. Shutting down gracefully...');
   try {
     await stopBot();
