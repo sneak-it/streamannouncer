@@ -22,7 +22,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/better-sqlite3": "^7.6.13",
-    "@types/node": "^24",
+    "@types/node": "^26",
     "eslint": "^10.8.0",
     "eslint-import-resolver-typescript": "^4.4.5",
     "eslint-plugin-import-x": "^4.17.1",
