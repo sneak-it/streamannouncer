@@ -1,5 +1,5 @@
 import type { TwitchStream, TwitchUser } from './twitch.js';
-import type { ChatInputCommandInteraction, GuildMember, Interaction, TextChannel } from 'discord.js';
+import type { ChatInputCommandInteraction, GuildMember, Interaction, TextChannel, User } from 'discord.js';
 
 import fs from 'node:fs';
 
@@ -10,7 +10,7 @@ import { clearTwitchToken, getStreamsByIds, getUsers, getUsersByIds, TwitchApiEr
 
 import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, ComponentType, EmbedBuilder, Events,
-  GatewayIntentBits, InteractionContextType, MessageFlags, PermissionsBitField,
+  GatewayIntentBits, InteractionContextType, MessageFlags, Options, PermissionsBitField,
   REST, Routes, SlashCommandBuilder
 } from 'discord.js';
 
@@ -257,11 +257,28 @@ function buildStreamEmbed(
   return embed;
 }
 
+/**
+ * Sweeper predicate for client.users.cache: evict everything except the bot's
+ * own user. Safe because nothing here reads that cache — tracked members are
+ * re-fetched from the gateway every poll cycle, and checkAdminPermission
+ * already falls back to a fetch when the cached roles miss. Called by the
+ * sweeper long after `client` is assigned, so the reference below is resolved.
+ */
+function isNotClientUser(user: User): boolean {
+  return user.id !== client.user?.id;
+}
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
-  ]
+  ],
+  sweepers: {
+    ...Options.DefaultSweeperSettings,
+    // client.users.cache has no eviction path of its own:
+    // GUILD_MEMBER_REMOVE drops the member but leaves the User behind.
+    users: { interval: 3600, filter: () => isNotClientUser },
+  },
 });
 
 export function isBotReady() {
