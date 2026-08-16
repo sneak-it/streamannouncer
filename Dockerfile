@@ -2,11 +2,17 @@ FROM node:24-alpine AS builder
 
 WORKDIR /app
 
+# better-sqlite3 ships no musl prebuilds, so node-gyp compiles it here
+RUN apk add --no-cache python3 make g++
+
 COPY package*.json ./
 RUN npm ci
 
 COPY . .
 RUN npm run build
+
+# Drop devDependencies, keeping the already-compiled better-sqlite3 binding
+RUN npm prune --omit=dev
 
 FROM node:24-alpine AS production
 
@@ -15,9 +21,9 @@ WORKDIR /app
 
 # Copy package files
 COPY package*.json ./
-RUN npm ci --omit=dev
 
-# Copy compiled JavaScript from builder stage
+# Copy pruned production deps and compiled JavaScript from builder stage
+COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 
 # Create the data directory for the SQLite database and set ownership
