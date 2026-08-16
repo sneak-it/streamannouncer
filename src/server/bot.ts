@@ -260,7 +260,7 @@ function buildStreamEmbed(
 /**
  * Sweeper predicate for client.users.cache: evict everything except the bot's
  * own user. Safe because nothing here reads that cache — tracked members are
- * re-fetched from the gateway every poll cycle, and checkAdminPermission
+ * re-fetched from the gateway every poll cycle, and hasAdminPermission
  * already falls back to a fetch when the cached roles miss. Called by the
  * sweeper long after `client` is assigned, so the reference below is resolved.
  */
@@ -412,7 +412,7 @@ const handleClientReady = async (): Promise<void> => {
   }
 };
 
-async function checkAdminPermission(interaction: ChatInputCommandInteraction): Promise<boolean> {
+async function hasAdminPermission(interaction: ChatInputCommandInteraction): Promise<boolean> {
   const adminRoleIdValue = process.env.DISCORD_ADMIN_ROLE_ID;
   const adminRoleId = adminRoleIdValue?.trim();
 
@@ -521,7 +521,7 @@ const handleInteractionCreate = async (interaction: Interaction): Promise<void> 
   try {
   switch (interaction.commandName) {
   case 'add-streamer': {
-    if (!(await checkAdminPermission(interaction))) return;
+    if (!(await hasAdminPermission(interaction))) return;
 
     const targetUser = interaction.options.getUser('user');
     const username = interaction.options.getString('username')?.toLowerCase();
@@ -569,7 +569,7 @@ const handleInteractionCreate = async (interaction: Interaction): Promise<void> 
   break;
   }
   case 'remove-streamer': {
-    if (!(await checkAdminPermission(interaction))) return;
+    if (!(await hasAdminPermission(interaction))) return;
 
     const targetUser = interaction.options.getUser('user');
     const username = interaction.options.getString('username')?.toLowerCase();
@@ -596,7 +596,7 @@ const handleInteractionCreate = async (interaction: Interaction): Promise<void> 
   break;
   }
   case 'list-streamers': {
-    if (!(await checkAdminPermission(interaction))) return;
+    if (!(await hasAdminPermission(interaction))) return;
 
     try {
       const users = selectAllTrackedUsersStatement.all() as TrackedUser[];
@@ -669,7 +669,7 @@ const handleInteractionCreate = async (interaction: Interaction): Promise<void> 
     break;
   }
   case 'test-embed': {
-    if (!(await checkAdminPermission(interaction))) return;
+    if (!(await hasAdminPermission(interaction))) return;
 
     const username = (interaction.options.getString('username') ?? '').toLowerCase();
 
