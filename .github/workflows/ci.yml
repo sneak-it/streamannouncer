@@ -46,6 +46,7 @@ jobs:
 
   docker-build:
     name: Docker Build
+    needs: quality
     runs-on: ubuntu-latest
 
     steps:
