@@ -119,8 +119,8 @@ const insertActiveStreamStatement = database.prepare(`
 `);
 
 /**
- * Evicts the least recently used entry from the cache when full.
- */
+Evicts the least recently used entry from the cache when full.
+*/
 function evictLeastRecentlyUsed(): void {
   if (userProfileCache.size === 0) {
   	return;
@@ -134,10 +134,10 @@ function evictLeastRecentlyUsed(): void {
 }
 
 /**
- * Resolves multiple user profiles at once. Cache hits are served directly and
- * all cache misses are fetched in batched requests (up to 100 ids per Twitch
- * call) instead of one serial round-trip per user.
- */
+Resolves multiple user profiles at once. Cache hits are served directly and
+all cache misses are fetched in batched requests (up to 100 ids per Twitch
+call) instead of one serial round-trip per user.
+*/
 async function getUserProfiles(userIds: string[]): Promise<Map<string, TwitchUser>> {
   const result = new Map<string, TwitchUser>();
   const now = Date.now();
@@ -174,9 +174,9 @@ async function getUserProfiles(userIds: string[]): Promise<Map<string, TwitchUse
 }
 
 /**
- * Extracts the numeric Discord API error code from a thrown error, if present.
- * discord.js attaches `code` to DiscordAPIError (e.g. 10008 Unknown Message).
- */
+Extracts the numeric Discord API error code from a thrown error, if present.
+discord.js attaches `code` to DiscordAPIError (e.g. 10008 Unknown Message).
+*/
 function getDiscordErrorCode(error: unknown): number | undefined {
   if (typeof error === 'object' && error !== null && 'code' in error) {
     const code = (error as { code?: unknown }).code;
@@ -186,8 +186,8 @@ function getDiscordErrorCode(error: unknown): number | undefined {
 }
 
 /**
- * Formats stream duration into a human-readable string.
- */
+Formats stream duration into a human-readable string.
+*/
 function formatStreamDuration(startedAt: string): string {
   const start = new Date(startedAt).getTime();
   const now = Date.now();
@@ -196,15 +196,12 @@ function formatStreamDuration(startedAt: string): string {
   const hours = Math.floor(diff / 3600);
   const minutes = Math.floor((diff % 3600) / 60);
 
-  if (hours > 0) {
-    return `${hours}h ${minutes}m`;
-  }
-  return `${minutes}m`;
+  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
 }
 
 /**
- * Builds a rich embed for a live Twitch stream announcement.
- */
+Builds a rich embed for a live Twitch stream announcement.
+*/
 function buildStreamEmbed(
   stream: {
     user_id: string;
@@ -258,12 +255,12 @@ function buildStreamEmbed(
 }
 
 /**
- * Sweeper predicate for client.users.cache: evict everything except the bot's
- * own user. Safe because nothing here reads that cache — tracked members are
- * re-fetched from the gateway every poll cycle, and hasAdminPermission
- * already falls back to a fetch when the cached roles miss. Called by the
- * sweeper long after `client` is assigned, so the reference below is resolved.
- */
+Sweeper predicate for client.users.cache: evict everything except the bot's
+own user. Safe because nothing here reads that cache — tracked members are
+re-fetched from the gateway every poll cycle, and hasAdminPermission
+already falls back to a fetch when the cached roles miss. Called by the
+sweeper long after `client` is assigned, so the reference below is resolved.
+*/
 function isNotClientUser(user: User): boolean {
   return user.id !== client.user?.id;
 }
@@ -331,11 +328,11 @@ const commands = [
 const botLogger = logger.child({ name: 'bot' });
 
 /**
- * Records a liveness heartbeat: (re)writes the health file so its mtime is
- * current and records the timestamp the watchdog reads. Called on ready and at
- * the end of every completed poll cycle — the signal is "the loop is running",
- * not "Twitch/Discord are reachable".
- */
+Records a liveness heartbeat: (re)writes the health file so its mtime is
+current and records the timestamp the watchdog reads. Called on ready and at
+the end of every completed poll cycle — the signal is "the loop is running",
+not "Twitch/Discord are reachable".
+*/
 function recordHealthy(): void {
   botState.lastHealthyAt = Date.now();
   try {
@@ -383,33 +380,37 @@ const handleClientReady = async (): Promise<void> => {
   // complete and refresh the heartbeat.
   botState.healthWatchdogId = setInterval(() => {
     const staleForMs = Date.now() - botState.lastHealthyAt;
-    if (staleForMs > HEALTH_STALE_MS) {
-      botLogger.fatal({ stale_ms: staleForMs }, 'Poll loop has not completed a cycle within the health window; exiting for restart.');
-      process.exit(1);
+    if (!(staleForMs > HEALTH_STALE_MS)) {
+      return;
     }
+
+    botLogger.fatal({ stale_ms: staleForMs }, 'Poll loop has not completed a cycle within the health window; exiting for restart.');
+    process.exit(1);
   }, HEALTH_WATCHDOG_INTERVAL_MS);
 
   // Start periodic database backups (every 60 minutes by default)
   const isBackupEnabled = process.env.BACKUP_ENABLED !== 'false';
+  if (!isBackupEnabled) {
+    return;
+  }
   const backupIntervalMinutes = parsePositiveIntEnvironment('BACKUP_INTERVAL_MINUTES', 60);
   const backupMaxKeep = parsePositiveIntEnvironment('BACKUP_MAX_KEEP', 5);
-  if (isBackupEnabled) {
-    // Run initial backup immediately, then periodically
+
+  // Run initial backup immediately, then periodically
+  try {
+    await createTimestampedBackup(backupMaxKeep);
+    botLogger.info({ enabled: isBackupEnabled, interval_minutes: backupIntervalMinutes, max_keep: backupMaxKeep }, 'Database backup completed');
+  } catch (error) {
+    botLogger.error({ err: error }, 'Failed to create initial database backup');
+  }
+  botState.backupIntervalId = setInterval(async () => {
     try {
       await createTimestampedBackup(backupMaxKeep);
-      botLogger.info({ enabled: isBackupEnabled, interval_minutes: backupIntervalMinutes, max_keep: backupMaxKeep }, 'Database backup completed');
+      botLogger.info('Periodic database backup completed');
     } catch (error) {
-      botLogger.error({ err: error }, 'Failed to create initial database backup');
+      botLogger.error({ err: error }, 'Failed to create periodic database backup');
     }
-    botState.backupIntervalId = setInterval(async () => {
-      try {
-        await createTimestampedBackup(backupMaxKeep);
-        botLogger.info('Periodic database backup completed');
-      } catch (error) {
-        botLogger.error({ err: error }, 'Failed to create periodic database backup');
-      }
-    }, backupIntervalMinutes * 60 * 1000);
-  }
+  }, backupIntervalMinutes * 60 * 1000);
 };
 
 async function hasAdminPermission(interaction: ChatInputCommandInteraction): Promise<boolean> {
@@ -449,12 +450,12 @@ async function hasAdminPermission(interaction: ChatInputCommandInteraction): Pro
 }
 
 /**
- * Builds an embed for a single page of the /list-streamers command.
- */
-function buildListEmbed(users: TrackedUser[], page: number, rowsPerPage: number, color: number): EmbedBuilder {
-  const totalPages = Math.ceil(users.length / rowsPerPage);
-  const startIndex = page * rowsPerPage;
-  const pageUsers = users.slice(startIndex, startIndex + rowsPerPage);
+Builds an embed for a single page of the /list-streamers command.
+*/
+function buildListEmbed(users: TrackedUser[], page: number): EmbedBuilder {
+  const totalPages = Math.ceil(users.length / LIST_ROWS_PER_PAGE);
+  const startIndex = page * LIST_ROWS_PER_PAGE;
+  const pageUsers = users.slice(startIndex, startIndex + LIST_ROWS_PER_PAGE);
 
   const lines = pageUsers.map((user, index) => {
     const position = startIndex + index + 1;
@@ -464,7 +465,7 @@ function buildListEmbed(users: TrackedUser[], page: number, rowsPerPage: number,
   });
 
   const embed = new EmbedBuilder()
-    .setColor(color)
+    .setColor(LIST_EMBED_COLOR)
     .setTitle(`Tracked Streamers · ${users.length} total`)
     .setDescription(lines.join('\n'));
 
@@ -476,8 +477,8 @@ function buildListEmbed(users: TrackedUser[], page: number, rowsPerPage: number,
 }
 
 /**
- * Builds the Previous/Next pagination row, disabling buttons at the page boundaries.
- */
+Builds the Previous/Next pagination row, disabling buttons at the page boundaries.
+*/
 function buildListRow(page: number, totalPages: number, isDisabled = false): ActionRowBuilder<ButtonBuilder> {
   const previousButton = new ButtonBuilder()
     .setCustomId('list_prev')
@@ -607,7 +608,7 @@ const handleInteractionCreate = async (interaction: Interaction): Promise<void> 
       }
 
       const totalPages = Math.ceil(users.length / LIST_ROWS_PER_PAGE);
-      const embed = buildListEmbed(users, 0, LIST_ROWS_PER_PAGE, LIST_EMBED_COLOR);
+      const embed = buildListEmbed(users, 0);
 
       // A single page needs no controls — avoids holding any pagination state at all.
       if (totalPages === 1) {
@@ -644,7 +645,7 @@ const handleInteractionCreate = async (interaction: Interaction): Promise<void> 
             : Math.min(totalPages - 1, currentPage + 1);
 
           await buttonInteraction.update({
-            embeds: [buildListEmbed(users, currentPage, LIST_ROWS_PER_PAGE, LIST_EMBED_COLOR)],
+            embeds: [buildListEmbed(users, currentPage)],
             components: [buildListRow(currentPage, totalPages)],
           });
           collector.resetTimer();
@@ -823,9 +824,9 @@ export async function stopBot() {
 }
 
 /**
- * Runs the polling loop with race condition protection.
- * Uses isPolling flag to prevent concurrent executions from setInterval.
- */
+Runs the polling loop with race condition protection.
+Uses isPolling flag to prevent concurrent executions from setInterval.
+*/
 async function runPoll() {
   if (botState.isPolling) return;
   // Chain onto the previous lock so poll cycles never overlap
@@ -846,8 +847,8 @@ async function runPoll() {
 }
 
 /**
- * Executes the actual polling logic.
- */
+Executes the actual polling logic.
+*/
 async function executePoll() {
   if (!botState.isReady || botState.isPolling) return;
 

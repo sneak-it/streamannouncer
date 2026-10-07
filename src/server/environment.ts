@@ -7,8 +7,8 @@ interface EnvironmentVariableInfo {
 }
 
 /**
- * List of all environment variables with their metadata.
- */
+List of all environment variables with their metadata.
+*/
 const ENV_VARS: EnvironmentVariableInfo[] = [
   { name: 'DISCORD_TOKEN', required: true, description: 'Discord bot token' },
   { name: 'DISCORD_GUILD_ID', required: true, description: 'Discord server (guild) ID' },
@@ -26,13 +26,13 @@ const ENV_VARS: EnvironmentVariableInfo[] = [
 ];
 
 /**
- * Parses an environment variable as a positive integer, falling back to a
- * default when unset or invalid. A malformed value (e.g. BACKUP_MAX_KEEP=five)
- * is logged and defaulted rather than silently coerced to NaN, which would
- * otherwise disable backup pruning or turn off backups entirely.
- * @param name - The environment variable name.
- * @param defaultValue - The value to use when unset or invalid.
- */
+Parses an environment variable as a positive integer, falling back to a
+default when unset or invalid. A malformed value (e.g. BACKUP_MAX_KEEP=five)
+is logged and defaulted rather than silently coerced to NaN, which would
+otherwise disable backup pruning or turn off backups entirely.
+@param name - The environment variable name.
+@param defaultValue - The value to use when unset or invalid.
+*/
 export function parsePositiveIntEnvironment(name: string, defaultValue: number): number {
   const raw = process.env[name];
   if (raw === undefined || raw.trim() === '') return defaultValue;
@@ -46,9 +46,9 @@ export function parsePositiveIntEnvironment(name: string, defaultValue: number):
 }
 
 /**
- * Validates that all required environment variables are set.
- * @throws {Error} If any required environment variable is missing or empty.
- */
+Validates that all required environment variables are set.
+@throws {Error} If any required environment variable is missing or empty.
+*/
 export function validateEnvironment(): void {
   const missingRequired: string[] = [];
   const warnings: string[] = [];

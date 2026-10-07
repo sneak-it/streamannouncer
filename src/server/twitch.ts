@@ -67,11 +67,11 @@ const INITIAL_BACKOFF_MS = 1000;
 const MAX_RATE_LIMIT_WAIT_MS = 30_000; // Cap so a far-future reset header can't stall a cycle
 
 /**
- * Computes how long to wait before retrying a 429, based on the
- * Ratelimit-Reset header (a Unix timestamp in seconds). Returns 0 when there is
- * no usable header so the caller can fall back to exponential backoff. The
- * actual sleep happens in fetchWithRetry — this function only reads the header.
- */
+Computes how long to wait before retrying a 429, based on the
+Ratelimit-Reset header (a Unix timestamp in seconds). Returns 0 when there is
+no usable header so the caller can fall back to exponential backoff. The
+actual sleep happens in fetchWithRetry — this function only reads the header.
+*/
 function getRateLimitWaitMs(response: Response): number {
   if (response.status !== 429) return 0;
 
@@ -83,18 +83,16 @@ function getRateLimitWaitMs(response: Response): number {
 
   // +1s cushion past the reset instant to avoid racing the window boundary.
   const waitTime = (resetTime * 1000) - Date.now() + 1000;
-  if (waitTime <= 0) return 0;
-
-  return Math.min(waitTime, MAX_RATE_LIMIT_WAIT_MS);
+  return waitTime <= 0 ? 0 : Math.min(waitTime, MAX_RATE_LIMIT_WAIT_MS);
 }
 
 /**
- * Wraps a Twitch API fetch with automatic retry. Retries 429 (respecting the
- * Ratelimit-Reset header, else exponential backoff), 5xx server errors, and
- * network/parse errors. Fails fast on 401 (auth) and other 4xx client errors,
- * which retrying cannot fix. Does NOT make test API calls to check rate limit
- * status.
- */
+Wraps a Twitch API fetch with automatic retry. Retries 429 (respecting the
+Ratelimit-Reset header, else exponential backoff), 5xx server errors, and
+network/parse errors. Fails fast on 401 (auth) and other 4xx client errors,
+which retrying cannot fix. Does NOT make test API calls to check rate limit
+status.
+*/
 async function fetchWithRetry<T>(
   operation: string,
   url: string,

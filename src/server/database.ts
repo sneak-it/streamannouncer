@@ -8,8 +8,8 @@ import Database from 'better-sqlite3';
 const dataDirectory = path.join(process.cwd(), 'data');
 
 /**
- * Opens the SQLite database, ensuring the data directory and schema exist.
- */
+Opens the SQLite database, ensuring the data directory and schema exist.
+*/
 function openDatabase(): Database.Database {
   if (!fs.existsSync(dataDirectory)) {
     fs.mkdirSync(dataDirectory, { recursive: true });
@@ -42,21 +42,21 @@ function openDatabase(): Database.Database {
 const database = openDatabase();
 
 /**
- * Creates a backup of the SQLite database using better-sqlite3's built-in backup method.
- * This method handles WAL mode correctly by creating a consistent snapshot without
- * needing to close the connection. The underlying `backup()` is asynchronous, so this
- * resolves only once the backup file is fully written.
- * @param backupPath - The path where the backup file will be created.
- * @throws If the backup could not be created.
- */
+Creates a backup of the SQLite database using better-sqlite3's built-in backup method.
+This method handles WAL mode correctly by creating a consistent snapshot without
+needing to close the connection. The underlying `backup()` is asynchronous, so this
+resolves only once the backup file is fully written.
+@param backupPath - The path where the backup file will be created.
+@throws If the backup could not be created.
+*/
 export async function createBackup(backupPath: string): Promise<void> {
   await database.backup(backupPath);
 }
 
 /**
- * Cleans up old backups, keeping only the most recent N backups.
- * @param maxKeep - The maximum number of backups to retain.
- */
+Cleans up old backups, keeping only the most recent N backups.
+@param maxKeep - The maximum number of backups to retain.
+*/
 export function cleanupOldBackups(maxKeep: number): void {
   // Defensive: a NaN/invalid limit would make `length <= maxKeep` false and
   // `slice(0, maxKeep)` empty, silently disabling pruning so backups pile up.
@@ -79,10 +79,10 @@ export function cleanupOldBackups(maxKeep: number): void {
 }
 
 /**
- * Creates a timestamped backup of the database and cleans up old backups.
- * @param maxKeep - The maximum number of backups to retain.
- * @throws If the backup could not be created.
- */
+Creates a timestamped backup of the database and cleans up old backups.
+@param maxKeep - The maximum number of backups to retain.
+@throws If the backup could not be created.
+*/
 export async function createTimestampedBackup(maxKeep: number = 5): Promise<void> {
   const timestamp = new Date().toISOString().replaceAll(/[:.]/g, '-');
   const backupPath = path.join(dataDirectory, `bot-backup-${timestamp}.db`);
