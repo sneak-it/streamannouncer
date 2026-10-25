@@ -588,7 +588,7 @@ const handleInteractionCreate = async (interaction: Interaction): Promise<void> 
         result = deleteTrackedUserByTwitchUsernameStatement.run(username);
       }
 
-      await (result && result.changes > 0 ? interaction.reply({ content: `Successfully removed the streamer.`, flags: MessageFlags.Ephemeral }) : interaction.reply({ content: `Could not find a tracked streamer matching that criteria.`, flags: MessageFlags.Ephemeral }));
+      await interaction.reply({ content: result && result.changes > 0 ? `Successfully removed the streamer.` : `Could not find a tracked streamer matching that criteria.`, flags: MessageFlags.Ephemeral });
     } catch (error) {
       botLogger.error({ err: error }, 'Error removing streamer');
       await safeRespondToInteraction(interaction, 'An error occurred while removing the streamer.');
