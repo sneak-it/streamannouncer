@@ -4,7 +4,7 @@ import type { ChatInputCommandInteraction, GuildMember, Interaction, TextChannel
 import fs from 'node:fs';
 
 import database, { createTimestampedBackup } from './database.js';
-import { parsePositiveIntEnvironment } from './environment.js';
+import { parseEmbedColorEnvironment, parsePositiveIntEnvironment } from './environment.js';
 import { logger } from './logger.js';
 import { clearTwitchToken, getStreamsByIds, getUsers, getUsersByIds, TwitchApiError } from './twitch.js';
 
@@ -37,6 +37,7 @@ const HEALTH_FILE = '/tmp/healthy';
 // (validated as a positive integer, so the effective floor is 1 minute).
 const POLL_INTERVAL_MINUTES = parsePositiveIntEnvironment('POLL_INTERVAL_MINUTES', 5);
 const POLL_INTERVAL_MS = POLL_INTERVAL_MINUTES * 60 * 1000;
+const EMBED_COLOR = parseEmbedColorEnvironment();
 // A completed poll cycle refreshes the health file. If none completes within
 // this window the poll loop is wedged (an await that never resolves), which a
 // restart can fix — so the watchdog exits. This is deliberately decoupled from
@@ -93,7 +94,6 @@ const userProfileCache = new Map<string, UserProfileCacheEntry>();
 
 // Presentation constants for /list-streamers
 const LIST_ROWS_PER_PAGE = 10;
-const LIST_EMBED_COLOR = 0x91_46_FF; // Twitch purple
 const LIST_COLLECTOR_TIMEOUT_MS = 120_000;
 
 // Pre-compiled database statements to reduce GC pressure
@@ -232,7 +232,7 @@ function buildStreamEmbed(
     + `?t=${thumbnailCacheBuster}`;
 
   const embed = new EmbedBuilder()
-    .setColor('#9146FF')
+    .setColor(EMBED_COLOR)
     .setTitle(stream.title || 'Untitled Stream')
     .setURL(`https://twitch.tv/${stream.user_login}`)
     .setAuthor({
@@ -471,7 +471,7 @@ function buildListEmbed(users: TrackedUser[], page: number): EmbedBuilder {
   });
 
   const embed = new EmbedBuilder()
-    .setColor(LIST_EMBED_COLOR)
+    .setColor(EMBED_COLOR)
     .setTitle(`Tracked Streamers · ${users.length} total`)
     .setDescription(lines.join('\n'));
 

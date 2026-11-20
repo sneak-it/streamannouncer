@@ -1,4 +1,10 @@
+import type { ColorResolvable } from 'discord.js';
+
 import { logger } from './logger.js';
+
+import { resolveColor } from 'discord.js';
+
+const DEFAULT_EMBED_COLOR = 0x91_46_FF; // Twitch purple
 
 interface EnvironmentVariableInfo {
   name: string;
@@ -18,6 +24,7 @@ const ENV_VARS: EnvironmentVariableInfo[] = [
   { name: 'DISCORD_ROLE_ID', required: false, description: 'Discord role ID for streamer filtering (optional)' },
   { name: 'DISCORD_ADMIN_ROLE_ID', required: false, description: 'Discord admin role ID for command access (optional)' },
   { name: 'DISCORD_ANNOUNCEMENT_MESSAGE', required: false, description: 'Custom announcement message template (optional, uses default if not set)' },
+  { name: 'EMBED_COLOR', required: false, description: 'Embed color as hex (e.g. 9146FF) or a discord.js color name (optional, defaults to Twitch purple)' },
   { name: 'TZ', required: false, description: 'Timezone for the container (optional, defaults to America/New_York)' },
   { name: 'POLL_INTERVAL_MINUTES', required: false, description: 'How often to poll Twitch for live streams in minutes (optional, defaults to 5)' },
   { name: 'BACKUP_ENABLED', required: false, description: 'Enable periodic database backups (optional, defaults to true)' },
@@ -43,6 +50,24 @@ export function parsePositiveIntEnvironment(name: string, defaultValue: number):
     return defaultValue;
   }
   return parsed;
+}
+
+/**
+Reads EMBED_COLOR (hex such as 9146FF or #9146FF, or a discord.js color name such
+as Blurple or Random), falling back to Twitch purple when unset or invalid.
+*/
+export function parseEmbedColorEnvironment(): ColorResolvable {
+  const raw = (process.env.EMBED_COLOR ?? '').trim();
+  if (!raw) return DEFAULT_EMBED_COLOR;
+
+  try {
+    resolveColor(raw as ColorResolvable); // throws on an unrecognized color
+  } catch {
+    logger.warn({ name: 'EMBED_COLOR', value: raw, default: '9146FF' }, 'Invalid embed color (expected hex like 9146FF or a discord.js color name); using default');
+    return DEFAULT_EMBED_COLOR;
+  }
+  // Keep the raw value rather than the resolved number so 'Random' re-rolls per embed.
+  return raw as ColorResolvable;
 }
 
 /**

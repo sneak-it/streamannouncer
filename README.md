@@ -80,6 +80,7 @@ In the **Bot** tab of the Discord Developer Portal, you must toggle the followin
 | `DISCORD_ANNOUNCEMENT_MESSAGE` | The message template. Supports `{user}` (Twitch name), `{mention}` (Discord mention), and `{url}` (Twitch URL). |
 | `TWITCH_CLIENT_ID` | Your Twitch App Client ID |
 | `TWITCH_CLIENT_SECRET` | Your Twitch App Client Secret |
+| `EMBED_COLOR` | Color of the embed side bar, as hex like `9146FF` or a discord.js color name like `Blurple` or `Random` (default: `9146FF`, Twitch purple). Leave out the `#`: when running locally with `npm run dev`, an unquoted `#` starts a comment and the value is dropped. |
 | `POLL_INTERVAL_MINUTES` | How often to poll Twitch for live streams, in minutes (positive integer, default: 5). |
 
 > **Note:** If you raise `POLL_INTERVAL_MINUTES` above the default, also relax the container `HEALTHCHECK` window (`-mmin -11` in the `Dockerfile`/`docker-compose.yml`), which is sized for the 5-minute default (~2 poll intervals). Otherwise a slower-but-healthy bot will be marked unhealthy.
