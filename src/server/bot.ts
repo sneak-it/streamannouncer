@@ -712,7 +712,8 @@ const handleInteractionCreate = async (interaction: Interaction): Promise<void> 
         return;
       }
 
-      await channel.send({ content: announcementText, embeds: [embed] });
+      // Test posts may only ping whoever ran the command, never @everyone/roles from the template.
+      await channel.send({ content: announcementText, embeds: [embed], allowedMentions: { users: [interaction.user.id] } });
       await interaction.editReply({ content: `Test embed sent to <#${channelId}>!` });
     } catch (error) {
       botLogger.error({ err: error }, 'Error sending test embed');
