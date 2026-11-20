@@ -859,7 +859,7 @@ async function executePoll() {
     // 1. Fetch tracked users from database
     const trackedUsers = selectAllTrackedUsersStatement.all() as TrackedUser[];
     botLogger.debug({ tracked_count: trackedUsers.length }, 'Fetched tracked users');
-    if (trackedUsers.length === 0) return;
+    // No early return on empty lists: the offline pass below must still delete leftover announcements.
 
     // 2. Filter tracked users by those who currently have the role (if roleId is provided)
     const validTrackedUsers: TrackedUser[] = [];
@@ -905,10 +905,7 @@ async function executePoll() {
       }
     }
 
-    if (validTrackedUsers.length === 0) return;
-
     const twitchIds = validTrackedUsers.map(u => u.twitch_id).filter(Boolean);
-    if (twitchIds.length === 0) return;
 
     // Twitch API allows max 100 per request
     const chunks = [];
