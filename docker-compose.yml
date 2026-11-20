@@ -10,6 +10,9 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
     environment:
       - NODE_ENV=production
     # Load configuration from the .env file
