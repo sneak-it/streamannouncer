@@ -439,7 +439,7 @@ async function hasAdminPermission(interaction: ChatInputCommandInteraction): Pro
   }
 
   if (!hasPermission) {
-    await interaction.reply({ content: 'You do not have permission to use this command.', flags: MessageFlags.Ephemeral });
+    await interaction.editReply({ content: 'You do not have permission to use this command.' });
     return false;
   }
   return true;
@@ -516,10 +516,12 @@ const handleInteractionCreate = async (interaction: Interaction): Promise<void> 
   if (!interaction.isChatInputCommand()) return;
 
   try {
+  // Defer first: Twitch lookups and the member fetch can outlast Discord's 3s reply window.
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  if (!(await hasAdminPermission(interaction))) return;
+
   switch (interaction.commandName) {
   case 'add-streamer': {
-    if (!(await hasAdminPermission(interaction))) return;
-
     const targetUser = interaction.options.getUser('user');
     const username = interaction.options.getString('username')?.toLowerCase();
     
@@ -529,9 +531,8 @@ const handleInteractionCreate = async (interaction: Interaction): Promise<void> 
     // Twitch usernames must be 4-25 characters long and contain only alphanumeric characters and underscores.
     const twitchUsernameRegex = /^[a-zA-Z0-9_]{3,25}$/;
     if (!twitchUsernameRegex.test(username)) {
-      await interaction.reply({ 
-        content: 'Invalid Twitch username format. It must be 4-25 characters long and contain only letters, numbers, and underscores.', 
-        flags: MessageFlags.Ephemeral 
+      await interaction.editReply({
+        content: 'Invalid Twitch username format. It must be 4-25 characters long and contain only letters, numbers, and underscores.',
       });
       return;
     }
@@ -539,25 +540,24 @@ const handleInteractionCreate = async (interaction: Interaction): Promise<void> 
     try {
       const users = await getUsers([username]);
       if (users.length === 0) {
-        await interaction.reply({ content: `Could not find a Twitch user with the username **${username}**.`, flags: MessageFlags.Ephemeral });
+        await interaction.editReply({ content: `Could not find a Twitch user with the username **${username}**.` });
         return;
       }
-      
+
       const twitchUser = users[0];
 
       // Prevent duplicate twitch_id links
       const existingLink = selectTrackedUserByTwitchIdStatement.get(twitchUser.id) as TrackedUser | undefined;
       if (existingLink && existingLink.discord_id !== targetUser.id) {
-        await interaction.reply({
+        await interaction.editReply({
           content: `Twitch account **${twitchUser.login}** is already linked to <@${existingLink.discord_id}>. Remove that link first if you want to reassign it.`,
-          flags: MessageFlags.Ephemeral,
         });
         return;
       }
 
       upsertTrackedUserStatement.run(targetUser.id, twitchUser.login, twitchUser.id, Date.now(), interaction.user.id);
 
-      await interaction.reply({ content: `Successfully linked Twitch account **${twitchUser.login}** to ${targetUser}!`, flags: MessageFlags.Ephemeral });
+      await interaction.editReply({ content: `Successfully linked Twitch account **${twitchUser.login}** to ${targetUser}!` });
     } catch (error) {
       botLogger.error({ err: error, username }, 'Error linking Twitch account');
       await safeRespondToInteraction(interaction, 'An error occurred while verifying the Twitch account.');
@@ -566,13 +566,11 @@ const handleInteractionCreate = async (interaction: Interaction): Promise<void> 
   break;
   }
   case 'remove-streamer': {
-    if (!(await hasAdminPermission(interaction))) return;
-
     const targetUser = interaction.options.getUser('user');
     const username = interaction.options.getString('username')?.toLowerCase();
 
     if (!targetUser && !username) {
-      await interaction.reply({ content: 'You must provide either a Discord user or a Twitch username to remove.', flags: MessageFlags.Ephemeral });
+      await interaction.editReply({ content: 'You must provide either a Discord user or a Twitch username to remove.' });
       return;
     }
 
@@ -584,7 +582,7 @@ const handleInteractionCreate = async (interaction: Interaction): Promise<void> 
         result = deleteTrackedUserByTwitchUsernameStatement.run(username);
       }
 
-      await interaction.reply({ content: result && result.changes > 0 ? `Successfully removed the streamer.` : `Could not find a tracked streamer matching that criteria.`, flags: MessageFlags.Ephemeral });
+      await interaction.editReply({ content: result && result.changes > 0 ? `Successfully removed the streamer.` : `Could not find a tracked streamer matching that criteria.` });
     } catch (error) {
       botLogger.error({ err: error }, 'Error removing streamer');
       await safeRespondToInteraction(interaction, 'An error occurred while removing the streamer.');
@@ -593,13 +591,11 @@ const handleInteractionCreate = async (interaction: Interaction): Promise<void> 
   break;
   }
   case 'list-streamers': {
-    if (!(await hasAdminPermission(interaction))) return;
-
     try {
       const users = selectAllTrackedUsersStatement.all() as TrackedUser[];
 
       if (users.length === 0) {
-        await interaction.reply({ content: 'There are currently no tracked streamers.', flags: MessageFlags.Ephemeral });
+        await interaction.editReply({ content: 'There are currently no tracked streamers.' });
         return;
       }
 
@@ -608,20 +604,18 @@ const handleInteractionCreate = async (interaction: Interaction): Promise<void> 
 
       // A single page needs no controls — avoids holding any pagination state at all.
       if (totalPages === 1) {
-        await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+        await interaction.editReply({ embeds: [embed] });
         break;
       }
 
-      await interaction.reply({
+      const message = await interaction.editReply({
         embeds: [embed],
         components: [buildListRow(0, totalPages)],
-        flags: MessageFlags.Ephemeral,
       });
 
       // Pagination state lives only for the lifetime of this collector — no global map,
       // so nothing is retained once the message stops being interacted with.
       let currentPage = 0;
-      const message = await interaction.fetchReply();
       const collector = message.createMessageComponentCollector({
         componentType: ComponentType.Button,
         time: LIST_COLLECTOR_TIMEOUT_MS,
@@ -666,11 +660,7 @@ const handleInteractionCreate = async (interaction: Interaction): Promise<void> 
     break;
   }
   case 'test-embed': {
-    if (!(await hasAdminPermission(interaction))) return;
-
     const username = (interaction.options.getString('username') ?? '').toLowerCase();
-
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     try {
       const users = await getUsers([username]);
