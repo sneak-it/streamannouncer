@@ -19,18 +19,18 @@ FROM node:24-alpine AS production
 # Set working directory
 WORKDIR /app
 
+# Install timezone data for Alpine Linux. Kept above the COPY layers so code changes don't rerun it.
+RUN apk add --no-cache tzdata
+
+# Create the data directory for the SQLite database and set ownership
+RUN mkdir -p /app/data && chown node:node /app/data
+
 # Copy package files
 COPY package*.json ./
 
 # Copy pruned production deps and compiled JavaScript from builder stage
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
-
-# Create the data directory for the SQLite database and set ownership
-RUN mkdir -p /app/data && chown node:node /app/data
-
-# Install timezone data for Alpine Linux
-RUN apk add --no-cache tzdata
 
 # Switch to the unprivileged 'node' user provided by the base image
 USER node
