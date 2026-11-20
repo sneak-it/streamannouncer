@@ -200,6 +200,16 @@ function formatStreamDuration(startedAt: string): string {
 }
 
 /**
+Fills every {user}, {mention} and {url} placeholder in the announcement template.
+*/
+function renderAnnouncement(stream: { user_login: string; user_name: string }, discordId: string | undefined): string {
+  return (process.env.DISCORD_ANNOUNCEMENT_MESSAGE || 'Hey @everyone, {user} is now live on Twitch! {url}')
+    .replaceAll('{user}', () => stream.user_name)
+    .replaceAll('{mention}', () => `<@${discordId}>`)
+    .replaceAll('{url}', () => `https://twitch.tv/${stream.user_login}`);
+}
+
+/**
 Builds a rich embed for a live Twitch stream announcement.
 */
 function buildStreamEmbed(
@@ -683,11 +693,7 @@ const handleInteractionCreate = async (interaction: Interaction): Promise<void> 
         started_at: new Date().toISOString()
       };
 
-      const announcementMessage = process.env.DISCORD_ANNOUNCEMENT_MESSAGE || 'Hey @everyone, {user} is now live on Twitch! {url}';
-      const announcementText = announcementMessage
-        .replace('{user}', () => stream.user_name)
-        .replace('{mention}', () => `<@${interaction.user.id}>`)
-        .replace('{url}', () => `https://twitch.tv/${stream.user_login}`);
+      const announcementText = renderAnnouncement(stream, interaction.user.id);
 
       const embed = buildStreamEmbed(
         { ...stream },
@@ -990,8 +996,6 @@ async function executePoll() {
     // Fetch user profiles for avatars (cached; cache misses are batched into one request)
     const userProfileMap = await getUserProfiles(liveStreams.map(stream => stream.user_id));
 
-    const announcementMessage = process.env.DISCORD_ANNOUNCEMENT_MESSAGE || 'Hey @everyone, {user} is now live on Twitch! {url}';
-
     for (const stream of liveStreams) {
       const twitchId = stream.user_id;
       const active = activeStreams.find(a => a.twitch_id === twitchId);
@@ -1008,10 +1012,7 @@ async function executePoll() {
 
       const embed = buildStreamEmbed(stream, profile);
 
-      const announcementText = announcementMessage
-        .replace('{user}', () => stream.user_name)
-        .replace('{mention}', () => `<@${trackedUser?.discord_id}>`)
-        .replace('{url}', () => `https://twitch.tv/${username}`);
+      const announcementText = renderAnnouncement(stream, trackedUser?.discord_id);
 
       if (active) {
         // Update existing message
