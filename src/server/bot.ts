@@ -11,7 +11,7 @@ import { clearTwitchToken, getStreamsByIds, getUsers, getUsersByIds, TwitchApiEr
 import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, ComponentType, EmbedBuilder, Events,
   GatewayIntentBits, InteractionContextType, MessageFlags, Options, PermissionsBitField,
-  REST, Routes, SlashCommandBuilder
+  SlashCommandBuilder
 } from 'discord.js';
 
 
@@ -349,21 +349,15 @@ const handleClientReady = async (): Promise<void> => {
   // Emit an initial heartbeat so the healthcheck passes before the first poll.
   recordHealthy();
 
-  // Register commands
-  const token = process.env.DISCORD_TOKEN;
-  const clientId = client.user?.id;
-  if (token && clientId) {
-    const rest = new REST({ version: '10' }).setToken(token);
-    try {
-      botLogger.info({ commandCount: commands.length }, 'Started refreshing application (/) commands');
-      await rest.put(
-        Routes.applicationCommands(clientId),
-        { body: commands },
-      );
-      botLogger.info('Application (/) commands reloaded');
-    } catch (error) {
-      botLogger.error({ err: error }, 'Failed to reload application commands');
-    }
+  // Register to DISCORD_GUILD_ID only, then clear global commands so none
+  // appear in other guilds the bot is added to.
+  try {
+    botLogger.info({ commandCount: commands.length }, 'Started refreshing application (/) commands');
+    await client.application?.commands.set(commands, process.env.DISCORD_GUILD_ID!);
+    await client.application?.commands.set([]);
+    botLogger.info('Application (/) commands reloaded');
+  } catch (error) {
+    botLogger.error({ err: error }, 'Failed to reload application commands');
   }
 
   // Run initial poll after bot is ready
@@ -416,13 +410,15 @@ const handleClientReady = async (): Promise<void> => {
 async function hasAdminPermission(interaction: ChatInputCommandInteraction): Promise<boolean> {
   const adminRoleIdValue = process.env.DISCORD_ADMIN_ROLE_ID;
   const adminRoleId = adminRoleIdValue?.trim();
+  // Admins of any other guild the bot is in must not manage this guild's streamers.
+  const isHomeGuild = interaction.guildId === process.env.DISCORD_GUILD_ID;
 
-  // Server administrators always pass. When no admin role is configured, the
+  // Home-guild administrators always pass. When no admin role is configured, the
   // Discord "Administrator" permission is the only gate (mirrored by each
   // command's setDefaultMemberPermissions), so commands are never world-open.
-  let hasPermission = interaction.memberPermissions?.has(PermissionsBitField.Flags.Administrator) ?? false;
+  let hasPermission = isHomeGuild && (interaction.memberPermissions?.has(PermissionsBitField.Flags.Administrator) ?? false);
 
-  if (!hasPermission && adminRoleId && interaction.member) {
+  if (isHomeGuild && !hasPermission && adminRoleId && interaction.member) {
     const member = interaction.member;
 
     // Fast path: check the roles already cached on the interaction member.
