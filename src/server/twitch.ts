@@ -208,14 +208,9 @@ export async function getTwitchToken() {
         throw new TwitchApiError('Twitch credentials not configured in environment variables');
       }
 
-      // Use URL API for safer URL construction
-      const url = new URL('https://id.twitch.tv/oauth2/token');
-      url.searchParams.set('client_id', clientId);
-      url.searchParams.set('client_secret', clientSecret);
-      url.searchParams.set('grant_type', 'client_credentials');
-      
-      const response = await fetch(url.href, {
-        method: 'POST'
+      const response = await fetch('https://id.twitch.tv/oauth2/token', {
+        method: 'POST',
+        body: new URLSearchParams({ client_id: clientId, client_secret: clientSecret, grant_type: 'client_credentials' }),
       });
 
       if (!response.ok) {
